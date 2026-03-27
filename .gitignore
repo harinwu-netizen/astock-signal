@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# 数据文件（不提交实际交易数据）
+data/watchlist.json
+data/positions.json
+data/trades.db
+data/*.json
+data/*.db
+logs/
+logs/*.log
+
+# 环境配置（不提交包含真实API Key的.env）
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Docker
+.dockerignore
+
+# 测试缓存
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 本地文件
+*.local
+*.bak
