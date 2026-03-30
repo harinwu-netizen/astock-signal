@@ -248,6 +248,45 @@ async def update_settings(
     return {"success": True, "updated": updates}
 
 
+# ========== API: 回测 ==========
+
+@app.get("/api/backtest")
+async def run_backtest(
+    code: str = "000629",
+    days: int = 60,
+    initial_capital: float = 100000.0,
+    buy_threshold: int = 5,
+    sell_threshold: int = 3,
+):
+    """
+    运行回测
+
+    Query Parameters:
+    - code: 股票代码（默认 000629）
+    - days: 回测天数（默认 60）
+    - initial_capital: 初始资金（默认 100000）
+    - buy_threshold: 买入信号阈值（默认 5）
+    - sell_threshold: 卖出信号阈值（默认 3）
+    """
+    from backtest.engine import BacktestEngine
+
+    try:
+        engine = BacktestEngine(
+            initial_capital=initial_capital,
+            buy_threshold=buy_threshold,
+            sell_threshold=sell_threshold,
+        )
+        result = engine.run(code, days=days)
+        return JSONResponse({
+            "success": True,
+            "result": result.to_dict(),
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"回测失败: {str(e)}")
+
+
 # ========== 健康检查 ==========
 
 @app.get("/health")
