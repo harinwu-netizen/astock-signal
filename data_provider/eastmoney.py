@@ -202,7 +202,10 @@ class EastMoney:
                 normalized = normalized[2:]
                 break
 
-        if not (len(normalized) == 6 and normalized.isdigit()):
+        # 标准化校验：支持A股(6位数字)和板块指数(BK开头6位)
+        is_stock = len(normalized) == 6 and normalized.isdigit()
+        is_block = len(normalized) == 6 and normalized.startswith("BK") and normalized[2:].isdigit()
+        if not (is_stock or is_block):
             logger.warning(f"[EastMoney] 无效代码: {code}")
             return None
 
@@ -252,7 +255,10 @@ class EastMoney:
                 normalized = normalized[2:]
                 break
 
-        if not (len(normalized) == 6 and normalized.isdigit()):
+        # 标准化校验：支持A股(6位数字)和板块指数(BK开头6位)
+        is_stock = len(normalized) == 6 and normalized.isdigit()
+        is_block = len(normalized) == 6 and normalized.startswith("BK") and normalized[2:].isdigit()
+        if not (is_stock or is_block):
             logger.warning(f"[EastMoney] 无效代码: {code}")
             return None
 
