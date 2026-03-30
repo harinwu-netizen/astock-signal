@@ -53,8 +53,10 @@ class Config:
     watch_interval: int = 300            # watch扫描间隔（秒）
     watch_enabled: bool = True           # 是否启用监控
 
-    # ===== 数据源设置 =====
-    data_source_priority: str = "txstock,eastmoney"  # 数据源优先级
+    # ===== 数据源设置（v3.0）=====
+    data_provider: str = "auto"          # txstock | eastmoney | auto
+    data_retry_count: int = 3           # 连续失败次数，触发切换
+    data_timeout: int = 5               # 请求超时（秒）
 
     # ===== 通知设置 =====
     feishu_webhook_url: str = ""
@@ -117,8 +119,10 @@ class Config:
             # 监控
             watch_interval=int(os.getenv("WATCH_INTERVAL", "300")),
             watch_enabled=os.getenv("WATCH_ENABLED", "true").lower() == "true",
-            # 数据源
-            data_source_priority=os.getenv("DATA_SOURCE_PRIORITY", "txstock,eastmoney"),
+            # 数据源（v3.0）
+            data_provider=os.getenv("DATA_PROVIDER", "auto"),
+            data_retry_count=int(os.getenv("DATA_RETRY_COUNT", "3")),
+            data_timeout=int(os.getenv("DATA_TIMEOUT", "5")),
             # 通知
             feishu_webhook_url=os.getenv("FEISHU_WEBHOOK_URL", ""),
             wechat_webhook_url=os.getenv("WECHAT_WEBHOOK_URL", ""),
