@@ -80,6 +80,10 @@ class Config:
     log_dir: str = "logs"
     database_path: str = "data/trades.db"
 
+    # ===== AI预警配置 =====
+    ai_loss_threshold: float = 8.0      # 亏损超此值触发预警（%）
+    ai_alert_enabled: bool = True       # AI预警总开关
+
     # ===== 大模型配置（AI增强报告）=====
     llm_provider: str = "deepseek"      # deepseek / zhipu / doubao / qwen / minimax / openai
     llm_model: str = "deepseek-chat"    # 具体模型名
@@ -142,6 +146,10 @@ class Config:
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             log_dir=os.getenv("LOG_DIR", "logs"),
             database_path=os.getenv("DATABASE_PATH", "data/trades.db"),
+            # 大模型
+            # AI预警
+            ai_loss_threshold=float(os.getenv("AI_LOSS_THRESHOLD", "8.0")),
+            ai_alert_enabled=os.getenv("AI_ALERT_ENABLED", "true").lower() == "true",
             # 大模型
             llm_provider=os.getenv("LLM_PROVIDER", "deepseek"),
             llm_model=os.getenv("LLM_MODEL", "deepseek-chat"),
