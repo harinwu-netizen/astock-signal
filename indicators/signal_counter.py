@@ -298,12 +298,15 @@ class SignalCounter:
         # ===== ATR止损/止盈价（根据市场状态使用不同倍数）=====
         # 注意：这里仅用于展示在信号里；实际风控以 position 记录的值和你账户的 _make_decision 为准
         if market_status == MarketStatus.WEAK:
-            _atr_mult = 1.5
+            _atr_mult = 3.0
+            _floor_pct = 0.03
         elif market_status == MarketStatus.STRONG:
             _atr_mult = 3.0
+            _floor_pct = 0.15
         else:
             _atr_mult = 2.0
-        atr_stop = calc_atr_stop_loss(current_price, atr, _atr_mult)
+            _floor_pct = 0.10
+        atr_stop = calc_atr_stop_loss(current_price, atr, _atr_mult, _floor_pct)
         atr_take_profit = calc_take_profit(current_price, atr)
 
         # ===== 计算弱市反弹信号（3指标，满足2个=可考虑买入）=====
@@ -401,22 +404,25 @@ class SignalCounter:
         rsi = signal.rsi_6
 
         # ========== 止损优先（所有市场状态）==========
+        # 止损公式：max(买入价 - N×ATR, 买入价 × (1 - 地板止损%))，地板止损%为各市场最低防线
         if buy_price > 0 and atr > 0:
+            from config import get_config
+            cfg = get_config()
             if regime == MarketStatus.WEAK:
-                weak_stop = buy_price * (1 - 0.03)
-                weak_atr_stop = buy_price - 2.0 * atr
-                if current_price <= min(weak_stop, weak_atr_stop):
+                weak_atr_stop = buy_price - cfg.weak_atr_multiplier * atr
+                weak_floor = buy_price * (1 - cfg.weak_stop_loss_pct / 100)  # 3%地板
+                if current_price <= max(weak_atr_stop, weak_floor):
                     return Decision.STOP_LOSS
             elif regime == MarketStatus.STRONG:
-                strong_stop = buy_price * (1 - 0.15)
-                strong_atr_stop = buy_price - 3.0 * atr
-                if current_price <= max(strong_stop, strong_atr_stop):
+                strong_atr_stop = buy_price - cfg.strong_atr_multiplier * atr
+                strong_floor = buy_price * (1 - cfg.strong_stop_loss_pct / 100)  # 15%地板
+                if current_price <= max(strong_atr_stop, strong_floor):
                     return Decision.STOP_LOSS
             else:
-                # 震荡市：-5% 或 2x ATR
-                cons_stop_pct = buy_price * (1 - 0.05)
-                cons_atr_stop = buy_price - 2.0 * atr
-                if current_price <= min(cons_stop_pct, cons_atr_stop):
+                # 震荡市：ATR止损 + 地板（取触发更容易的价格）
+                cons_atr_stop = buy_price - cfg.consolidate_atr_multiplier * atr
+                cons_floor = buy_price * (1 - cfg.consolidate_stop_loss_pct / 100)  # 10%地板
+                if current_price <= max(cons_atr_stop, cons_floor):
                     return Decision.STOP_LOSS
 
         # ========== 止盈 ==========
@@ -426,11 +432,11 @@ class SignalCounter:
                 if ma20 > 0 and current_price >= ma20:
                     return Decision.TAKE_PROFIT
             elif regime == MarketStatus.STRONG:
-                if current_price >= buy_price * 1.25:
+                if current_price >= buy_price * (1 + cfg.strong_take_profit_pct / 100):
                     return Decision.TAKE_PROFIT
             else:
-                # 震荡市波段止盈：RSI>55 或 触及布林上轨
-                if rsi > 55 or (signal.bb_upper > 0 and current_price >= signal.bb_upper * 0.98):
+                # 震荡市波段止盈：RSI>65 或 触及布林上轨
+                if rsi > 65 or (signal.bb_upper > 0 and current_price >= signal.bb_upper * 0.98):
                     return Decision.TAKE_PROFIT
 
         # ========== 弱市卖出 ==========
@@ -479,14 +485,18 @@ class SignalCounter:
 
     def _calc_position_ratio(self, signal, market_status: MarketStatus = None) -> float:
         """
-        根据市场状态 + 信号数量计算建议仓位（v4.3）
-        - 弱市：rebound_count → 仓位
-        - 震荡市：consolidate_buy_count → 仓位（改用波段信号）
+        根据市场状态 + 信号数量计算建议仓位（v4.3/v4.4）
+        - 弱市：rebound_count → 仓位，上限来自 cfg.weak_single_position_pct
+        - 震荡市：consolidate_buy_count → 仓位
         - 强市：trend_count → 仓位
         """
+        from config import get_config
+        cfg = get_config()
+
         if market_status == MarketStatus.WEAK:
-            # 弱市：仓位与反弹信号数挂钩，上限30%
-            return min(0.1 * max(1, signal.rebound_count), 0.3)
+            # 弱市：仓位与反弹信号数挂钩，上限为弱市单只仓位上限
+            cap = cfg.weak_single_position_pct / 100
+            return min(0.1 * max(1, signal.rebound_count), cap)
 
         elif market_status == MarketStatus.STRONG:
             # 强市：趋势信号决定仓位

@@ -65,7 +65,10 @@ class MultiPosition:
     def create(cls, code, name, buy_date, buy_price, qty, cost, atr,
                atr_mult, sl_pct, tp_pct, max_hold,
                regime, rebound, trend, ma20_tp=0.0, bb_upper=0.0):
-        ts = calc_atr_stop_loss(buy_price, atr, atr_mult) if atr > 0 else buy_price * 0.95
+        # ATR止损（含地板保护）
+        floor_map = {MarketStatus.WEAK: 0.03, MarketStatus.STRONG: 0.15, MarketStatus.CONSOLIDATE: 0.10}
+        floor_pct = floor_map.get(regime, sl_pct / 100)
+        ts = calc_atr_stop_loss(buy_price, atr, atr_mult, floor_pct) if atr > 0 else buy_price * (1 - floor_pct)
         sl = buy_price * (1 - sl_pct / 100)
         trailing_stop = max(ts, sl)
         stop_loss = trailing_stop

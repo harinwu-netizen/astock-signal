@@ -541,9 +541,11 @@ class BacktestEngine:
 
                 cash -= cost["total_cost"]
 
-                # 止损止盈用 regime 对应参数
+                # 止损止盈用 regime 对应参数（含地板保护）
                 if atr > 0:
-                    stop_loss = calc_atr_stop_loss(buy_price, atr, regime_params["atr_multiplier"])
+                    floor_map = {MarketStatus.WEAK: 0.03, MarketStatus.STRONG: 0.15, MarketStatus.CONSOLIDATE: 0.10}
+                    floor_pct = floor_map.get(market_status, 0.10)
+                    stop_loss = calc_atr_stop_loss(buy_price, atr, regime_params["atr_multiplier"], floor_pct)
                 else:
                     stop_loss = buy_price * (1 - regime_params["stop_loss_pct"] / 100)
 

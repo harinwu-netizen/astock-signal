@@ -416,7 +416,9 @@ def _handle_auto_trade(signal, history, realtime, market_status):
             print(f"\n  🤖 自动交易检查通过，准备买入 {quantity} 手")
             # 创建持仓记录（模拟撮合）
             atr = signal.atr
-            stop_loss = calc_atr_stop_loss(price, atr) if atr > 0 else price * 0.95
+            floor_map = {"WEAK": 0.03, "STRONG": 0.15, "CONSOLIDATE": 0.10}
+            floor_pct = floor_map.get(market_status.value, 0.05) if hasattr(market_status, 'value') else 0.05
+            stop_loss = calc_atr_stop_loss(price, atr, 2.0, floor_pct) if atr > 0 else price * (1 - floor_pct)
 
             pos = Position(
                 id=str(uuid.uuid4()),

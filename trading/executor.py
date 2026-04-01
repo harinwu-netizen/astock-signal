@@ -105,9 +105,11 @@ class TradeExecutor:
                 message=f"资金不足：需{total_cost:.0f}元，可用{available:.0f}元"
             )
 
-        # ATR止损价（根据市场状态使用对应倍数）
+        # ATR止损价（含地板保护，根据市场状态）
         if atr > 0:
-            stop_loss = calc_atr_stop_loss(price, atr, atr_multiplier)
+            floor_map = {"WEAK": 0.03, "STRONG": 0.15, "CONSOLIDATE": 0.10}
+            floor_pct = floor_map.get(market_regime, 0.05)
+            stop_loss = calc_atr_stop_loss(price, atr, atr_multiplier, floor_pct)
             take_profit = price * (1 + take_profit_pct / 100)
         else:
             stop_loss = price * (1 - stop_loss_pct / 100)

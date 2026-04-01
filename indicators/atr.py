@@ -66,22 +66,28 @@ def calc_atr(
 def calc_atr_stop_loss(
     buy_price: float,
     atr: float,
-    multiplier: float = 2.0
+    multiplier: float = 2.0,
+    floor_pct: float = 0.05
 ) -> float:
     """
-    计算ATR止损价
+    计算ATR止损价（含地板保护）
+
+    公式：max(买入价 - N×ATR, 买入价 × (1 - floor_pct))
 
     Args:
         buy_price: 买入价
         atr: ATR值
         multiplier: ATR倍数，默认2倍
+        floor_pct: 地板止损百分比，默认5%（即最多亏损5%）
 
     Returns:
         止损价
     """
     if atr <= 0:
-        return round(buy_price * 0.95, 2)  # 默认5%止损
-    return round(buy_price - atr * multiplier, 2)
+        return round(buy_price * (1 - floor_pct), 2)
+    atr_stop = buy_price - atr * multiplier
+    floor_stop = buy_price * (1 - floor_pct)
+    return round(max(atr_stop, floor_stop), 2)
 
 
 def calc_take_profit(

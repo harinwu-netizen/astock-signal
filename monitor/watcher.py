@@ -261,7 +261,7 @@ class Watcher:
 
             # ---- 条件4：弱市RSI反弹到位（>65）----
             elif position.market_regime == "WEAK" and signal.rsi_6 > cfg.weak_rsi_sell_threshold:
-                sell_reason = f"弱市RSI反弹到位({signal.rsi_6:.1f}>65)"
+                sell_reason = f"弱市RSI反弹到位({signal.rsi_6:.1f}>{cfg.weak_rsi_sell_threshold:.0f})"
 
             if sell_reason:
                 logger.warning(f"🚨 触发风控: {position.name} @{signal.price:.2f} — {sell_reason}")
