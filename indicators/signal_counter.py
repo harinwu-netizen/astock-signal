@@ -295,9 +295,46 @@ class SignalCounter:
         sell_count = len(sell_triggered)
         sell_detail = [s.name for s in sell_signals if s.triggered]
 
-        # ===== ATR止损/止盈价 =====
-        atr_stop = calc_atr_stop_loss(current_price, atr)
+        # ===== ATR止损/止盈价（根据市场状态使用不同倍数）=====
+        # 注意：这里仅用于展示在信号里；实际风控以 position 记录的值和你账户的 _make_decision 为准
+        if market_status == MarketStatus.WEAK:
+            _atr_mult = 1.5
+        elif market_status == MarketStatus.STRONG:
+            _atr_mult = 3.0
+        else:
+            _atr_mult = 2.0
+        atr_stop = calc_atr_stop_loss(current_price, atr, _atr_mult)
         atr_take_profit = calc_take_profit(current_price, atr)
+
+        # ===== 计算弱市反弹信号（3指标，满足2个=可考虑买入）=====
+        rebound_signals, rebound_count = self._count_rebound_signals(
+            rsi, prev_rsi, closes, current_price, volume, vol_ma5
+        )
+
+        # ===== 计算强市趋势信号（3指标，满足2个=可考虑买入）=====
+        # 计算前一日MACD柱（用于判断是否扩散）
+        prev_macd_dif, prev_macd_dea, prev_macd_bar = 0.0, 0.0, 0.0
+        if len(closes) >= 2:
+            prev_macd_dif, prev_macd_dea, prev_macd_bar = calc_macd(closes[:-1])
+        trend_signals, trend_count = self._count_trend_signals(
+            ma5, ma10, ma20, dif, macd_bar, prev_macd_bar,
+            volume, vol_ma5, current_price, closes[-1] if len(closes) >= 1 else 0
+        )
+
+        # ===== 计算震荡市波段信号（v4.3新增）=====
+        # 计算布林上轨（震荡市止盈用）
+        if len(closes) >= 20:
+            std20 = (sum((c - ma20) ** 2 for c in closes[-20:]) / 20) ** 0.5
+            bb_upper = ma20 + 2 * std20
+        else:
+            bb_upper = ma20 * 1.1
+
+        consolidate_buy_signals, consolidate_buy_count = self._count_consolidate_buy_signals(
+            rsi, ma10, closes, current_price, volume, vol_ma5
+        )
+        consolidate_sell_signals, consolidate_sell_count = self._count_consolidate_sell_signals(
+            rsi, ma20, bb_upper, current_price
+        )
 
         # ===== 构建结果 =====
         signal = RealTimeSignal(
@@ -325,6 +362,15 @@ class SignalCounter:
             buy_count=buy_count,
             sell_signals=sell_signals,
             sell_count=sell_count,
+            rebound_signals=rebound_signals,
+            rebound_count=rebound_count,
+            trend_signals=trend_signals,
+            trend_count=trend_count,
+            consolidate_buy_signals=consolidate_buy_signals,
+            consolidate_buy_count=consolidate_buy_count,
+            consolidate_sell_signals=consolidate_sell_signals,
+            consolidate_sell_count=consolidate_sell_count,
+            bb_upper=bb_upper,
             atr_stop_loss=atr_stop,
             take_profit_price=atr_take_profit,
             buy_signals_detail=buy_detail,
@@ -335,51 +381,418 @@ class SignalCounter:
 
         # ===== 计算决策 =====
         signal.decision = self._make_decision(signal, buy_price)
-        signal.position_ratio = self._calc_position_ratio(signal.buy_count)
+        signal.position_ratio = self._calc_position_ratio(signal, market_status)
 
         return signal
 
     def _make_decision(self, signal: RealTimeSignal, buy_price: float) -> Decision:
-        """根据信号数量决定操作"""
-        buy = signal.buy_count
+        """
+        根据市场状态 + 信号决定操作（v4.3）
+
+        强市：趋势3指标满足≥2 + 乖离率≤5% + RSI≤70
+        弱市：反弹3指标满足≥2 + MA20止盈
+        震荡市（v4.3）：波段3指标满足≥2（RSI适中回调+回踩均线+缩量整固）
+        """
+
+        regime = signal.market_status
+        current_price = signal.price
+        atr = signal.atr
+        bias = signal.bias_ma5
+        rsi = signal.rsi_6
+
+        # ========== 止损优先（所有市场状态）==========
+        if buy_price > 0 and atr > 0:
+            if regime == MarketStatus.WEAK:
+                weak_stop = buy_price * (1 - 0.03)
+                weak_atr_stop = buy_price - 2.0 * atr
+                if current_price <= min(weak_stop, weak_atr_stop):
+                    return Decision.STOP_LOSS
+            elif regime == MarketStatus.STRONG:
+                strong_stop = buy_price * (1 - 0.15)
+                strong_atr_stop = buy_price - 3.0 * atr
+                if current_price <= max(strong_stop, strong_atr_stop):
+                    return Decision.STOP_LOSS
+            else:
+                # 震荡市：-5% 或 2x ATR
+                cons_stop_pct = buy_price * (1 - 0.05)
+                cons_atr_stop = buy_price - 2.0 * atr
+                if current_price <= min(cons_stop_pct, cons_atr_stop):
+                    return Decision.STOP_LOSS
+
+        # ========== 止盈 ==========
+        if buy_price > 0:
+            if regime == MarketStatus.WEAK:
+                ma20 = signal.ma20
+                if ma20 > 0 and current_price >= ma20:
+                    return Decision.TAKE_PROFIT
+            elif regime == MarketStatus.STRONG:
+                if current_price >= buy_price * 1.25:
+                    return Decision.TAKE_PROFIT
+            else:
+                # 震荡市波段止盈：RSI>55 或 触及布林上轨
+                if rsi > 55 or (signal.bb_upper > 0 and current_price >= signal.bb_upper * 0.98):
+                    return Decision.TAKE_PROFIT
+
+        # ========== 弱市卖出 ==========
+        if regime == MarketStatus.WEAK and buy_price > 0:
+            if rsi > 65:
+                return Decision.SELL
+
+        # ========== 震荡市波段卖出信号 ==========
+        if regime == MarketStatus.CONSOLIDATE and buy_price > 0:
+            if signal.consolidate_sell_count >= 2:
+                return Decision.SELL
+
+        # ========== 震荡/强市经典卖出信号 ==========
         sell = signal.sell_count
-
-        # 止损优先
-        if buy_price > 0 and signal.price <= signal.atr_stop_loss:
-            return Decision.STOP_LOSS
-
-        # 止盈
-        if buy_price > 0 and signal.price >= signal.take_profit_price:
-            return Decision.TAKE_PROFIT
-
-        # 卖出信号优先
-        if sell >= 3:
+        if regime == MarketStatus.CONSOLIDATE and sell >= 3:
+            return Decision.SELL
+        if regime == MarketStatus.STRONG and sell >= 5:
             return Decision.SELL
 
-        # 弱势市场严格限制买入
-        if signal.market_status == MarketStatus.WEAK:
-            if buy >= 7:  # 弱势市场要更强的信号才考虑买入
-                return Decision.HOLD
+        # ========== 买入决策 ==========
+        if regime == MarketStatus.WEAK:
+            if signal.rebound_count >= 2:
+                return Decision.BUY
             return Decision.WATCH
 
-        # 买入信号判断
-        if buy >= 5:
+        elif regime == MarketStatus.STRONG:
+            if signal.trend_count < 2:
+                return Decision.WATCH
+            if bias > 5 or rsi > 70:  # 追高拦截
+                return Decision.WATCH
             return Decision.BUY
 
-        # 观望
-        return Decision.WATCH
+        else:
+            # 震荡市：波段3指标满足≥2个（v4.3）
+            if signal.consolidate_buy_count >= 2:
+                return Decision.BUY
+            return Decision.WATCH
 
-    def _calc_position_ratio(self, buy_count: int) -> float:
-        """根据信号数量计算建议仓位"""
-        if buy_count >= 8:
-            return 1.0
-        elif buy_count == 7:
-            return 0.8
-        elif buy_count == 6:
-            return 0.5
-        elif buy_count == 5:
-            return 0.3
-        return 0.0
+    def _calc_std(self, values: list) -> float:
+        """计算标准差"""
+        if len(values) < 2:
+            return 0.0
+        mean = sum(values) / len(values)
+        variance = sum((v - mean) ** 2 for v in values) / len(values)
+        return variance ** 0.5
+
+    def _calc_position_ratio(self, signal, market_status: MarketStatus = None) -> float:
+        """
+        根据市场状态 + 信号数量计算建议仓位（v4.3）
+        - 弱市：rebound_count → 仓位
+        - 震荡市：consolidate_buy_count → 仓位（改用波段信号）
+        - 强市：trend_count → 仓位
+        """
+        if market_status == MarketStatus.WEAK:
+            # 弱市：仓位与反弹信号数挂钩，上限30%
+            return min(0.1 * max(1, signal.rebound_count), 0.3)
+
+        elif market_status == MarketStatus.STRONG:
+            # 强市：趋势信号决定仓位
+            count = signal.trend_count
+            if count >= 3:
+                return 1.0
+            elif count == 2:
+                return 0.5
+            else:
+                return 0.0
+
+        else:
+            # 震荡市：波段买入信号决定仓位（v4.3 改用 consolidate_buy_count）
+            count = signal.consolidate_buy_count
+            if count >= 3:
+                return 1.0
+            elif count == 2:
+                return 0.5
+            else:
+                return 0.0
+
+    def _count_rebound_signals(
+        self,
+        rsi: float,
+        prev_rsi: float,
+        closes: list,
+        current_price: float,
+        volume: float,
+        vol_ma5: float,
+    ) -> tuple:
+        """
+        计算弱市反弹3指标
+        指标1: RSI超卖反弹
+        指标2: 价格接近布林下轨/前低
+        指标3: 缩量企稳
+
+        Returns:
+            (signals_list, count)
+        """
+        signals = []
+        triggered = 0
+
+        # 指标①：RSI超卖反弹（RSI<35 且 相比前一日回升）
+        if rsi < 35 and rsi > prev_rsi:
+            signals.append(Signal(
+                name="RSI超卖反弹",
+                triggered=True,
+                reason=f"RSI={rsi:.1f}<35 且拐头向上(前一日RSI={prev_rsi:.1f})"
+            ))
+            triggered += 1
+        else:
+            signals.append(Signal(
+                name="RSI超卖反弹",
+                triggered=False,
+                reason=f"RSI={rsi:.1f} {'≥35' if rsi >= 35 else '未回升'}"
+            ))
+
+        # 指标②：价格接近布林下轨/近20日前低
+        import numpy as np
+        if len(closes) >= 20:
+            recent_low = min(closes[-20:])
+        else:
+            recent_low = min(closes)
+        price_near_low = current_price <= recent_low * 1.05
+
+        if price_near_low:
+            signals.append(Signal(
+                name="价格接近前低",
+                triggered=True,
+                reason=f"现价{current_price:.2f} ≤ 前低{recent_low:.2f}×1.05={recent_low*1.05:.2f}"
+            ))
+            triggered += 1
+        else:
+            signals.append(Signal(
+                name="价格接近前低",
+                triggered=False,
+                reason=f"现价{current_price:.2f} > 前低{recent_low:.2f}×1.05={recent_low*1.05:.2f}"
+            ))
+
+        # 指标③：缩量企稳（成交量 < 5日均量 × 0.75）
+        vol_ratio = volume / vol_ma5 if vol_ma5 > 0 else 1.0
+        if vol_ratio < 0.75:
+            signals.append(Signal(
+                name="缩量企稳",
+                triggered=True,
+                reason=f"量比={vol_ratio:.2f}<0.75，抛压减轻"
+            ))
+            triggered += 1
+        else:
+            signals.append(Signal(
+                name="缩量企稳",
+                triggered=False,
+                reason=f"量比={vol_ratio:.2f}≥0.75"
+            ))
+
+        return signals, triggered
+
+    def _count_trend_signals(
+        self,
+        ma5: float,
+        ma10: float,
+        ma20: float,
+        dif: float,
+        macd_bar: float,
+        prev_macd_bar: float,
+        volume: float,
+        vol_ma5: float,
+        current_price: float,
+        prev_close: float,
+    ) -> tuple:
+        """
+        计算强市趋势3指标
+        指标1: 均线多头排列
+        指标2: MACD扩散
+        指标3: 量价齐升
+
+        Returns:
+            (signals_list, count)
+        """
+        signals = []
+        triggered = 0
+
+        # 指标①：均线多头排列（MA5>MA10>MA20）
+        if ma5 > ma10 > ma20:
+            signals.append(Signal(
+                name="均线多头排列",
+                triggered=True,
+                reason=f"MA5={ma5:.2f}>MA10={ma10:.2f}>MA20={ma20:.2f}"
+            ))
+            triggered += 1
+        else:
+            signals.append(Signal(
+                name="均线多头排列",
+                triggered=False,
+                reason=f"MA5={ma5:.2f},MA10={ma10:.2f},MA20={ma20:.2f} 未满足多头"
+            ))
+
+        # 指标②：MACD扩散（DIF>0 且 MACD柱比前一日放大）
+        macd_expanding = dif > 0 and macd_bar > prev_macd_bar
+        if macd_expanding:
+            signals.append(Signal(
+                name="MACD扩散",
+                triggered=True,
+                reason=f"DIF={dif:.4f}>0 且 MACD柱放大({macd_bar:.4f} > {prev_macd_bar:.4f})"
+            ))
+            triggered += 1
+        else:
+            signals.append(Signal(
+                name="MACD扩散",
+                triggered=False,
+                reason=f"DIF={'>0' if dif > 0 else '≤0'}, MACD柱{'放大' if macd_bar > prev_macd_bar else '未放大'}"
+            ))
+
+        # 指标③：量价齐升（成交量>1.3x均量 且 收盘上涨）
+        vol_ratio = volume / vol_ma5 if vol_ma5 > 0 else 1.0
+        price_rising = prev_close > 0 and current_price > prev_close
+        volume_price_rising = vol_ratio > 1.3 and price_rising
+
+        if volume_price_rising:
+            signals.append(Signal(
+                name="量价齐升",
+                triggered=True,
+                reason=f"量比={vol_ratio:.2f}>1.3 且上涨{((current_price-prev_close)/prev_close*100):.2f}%"
+            ))
+            triggered += 1
+        else:
+            reason_parts = []
+            if vol_ratio <= 1.3:
+                reason_parts.append(f"量比={vol_ratio:.2f}≤1.3")
+            if not price_rising:
+                reason_parts.append(f"价格未上涨")
+            signals.append(Signal(
+                name="量价齐升",
+                triggered=False,
+                reason=" ".join(reason_parts) if reason_parts else "未满足"
+            ))
+
+        return signals, triggered
+
+    # ==================================================================== #
+    #  震荡市波段信号（v4.3新增）
+    # ==================================================================== #
+
+    def _count_consolidate_buy_signals(
+        self,
+        rsi: float,
+        ma10: float,
+        closes: list,
+        current_price: float,
+        volume: float,
+        vol_ma5: float,
+    ) -> tuple:
+        """
+        震荡市买入波段信号（3指标满足2个）
+        ① RSI在30~50区间（适中回调，不是超卖也不是超买）
+        ② 价格回踩MA10均线（支撑位）
+        ③ 缩量整固（量比<0.8，抛压轻）
+        """
+        signals = []
+        triggered = 0
+
+        # 指标①：RSI适中回调（30~50区间）
+        if 30 <= rsi <= 50:
+            signals.append(Signal(
+                name="RSI适中回调",
+                triggered=True,
+                reason=f"RSI={rsi:.1f}在[30,50]区间，回调到位"
+            ))
+            triggered += 1
+        else:
+            signals.append(Signal(
+                name="RSI适中回调",
+                triggered=False,
+                reason=f"RSI={rsi:.1f}不在[30,50]区间"
+            ))
+
+        # 指标②：价格回踩MA10（≤1.02倍）
+        price_near_ma10 = current_price <= ma10 * 1.02
+        if price_near_ma10:
+            signals.append(Signal(
+                name="价格回踩均线",
+                triggered=True,
+                reason=f"现价{current_price:.2f}≤MA10×1.02={ma10*1.02:.2f}"
+            ))
+            triggered += 1
+        else:
+            signals.append(Signal(
+                name="价格回踩均线",
+                triggered=False,
+                reason=f"现价{current_price:.2f}>MA10×1.02={ma10*1.02:.2f}"
+            ))
+
+        # 指标③：缩量整固（量比<0.8）
+        vol_ratio = volume / vol_ma5 if vol_ma5 > 0 else 1.0
+        if vol_ratio < 0.8:
+            signals.append(Signal(
+                name="缩量整固",
+                triggered=True,
+                reason=f"量比={vol_ratio:.2f}<0.8，抛压轻"
+            ))
+            triggered += 1
+        else:
+            signals.append(Signal(
+                name="缩量整固",
+                triggered=False,
+                reason=f"量比={vol_ratio:.2f}≥0.8"
+            ))
+
+        return signals, triggered
+
+    def _count_consolidate_sell_signals(
+        self,
+        rsi: float,
+        ma20: float,
+        bb_upper: float,
+        current_price: float,
+    ) -> tuple:
+        """
+        震荡市卖出波段信号（3指标满足2个）
+        ① RSI>55（回到正常/偏强区间）
+        ② 价格触及布林上轨（区间上沿）
+        ③ 持仓超5天（时间止损）
+        注意：持仓天数由外部持仓状态决定，此处只提供前两个信号
+        """
+        signals = []
+        triggered = 0
+
+        # 指标①：RSI回升>55
+        if rsi > 55:
+            signals.append(Signal(
+                name="RSI回升止盈",
+                triggered=True,
+                reason=f"RSI={rsi:.1f}>55，回到正常区间"
+            ))
+            triggered += 1
+        else:
+            signals.append(Signal(
+                name="RSI回升止盈",
+                triggered=False,
+                reason=f"RSI={rsi:.1f}≤55"
+            ))
+
+        # 指标②：价格触及布林上轨
+        if bb_upper > 0 and current_price >= bb_upper * 0.98:
+            signals.append(Signal(
+                name="触及布林上轨",
+                triggered=True,
+                reason=f"现价{current_price:.2f}≥布林上轨×0.98={bb_upper*0.98:.2f}"
+            ))
+            triggered += 1
+        else:
+            signals.append(Signal(
+                name="触及布林上轨",
+                triggered=False,
+                reason=f"布林上轨×0.98={bb_upper*0.98:.2f}，现价{current_price:.2f}"
+            ))
+
+        # 指标③：持仓超5天（由持仓状态决定，此处预判）
+        # 持仓天数无法从信号本身判断，留空
+        signals.append(Signal(
+            name="持仓超5天",
+            triggered=False,
+            reason="由持仓状态判断（时间止损）"
+        ))
+
+        return signals, triggered
 
     def _empty_signal(self, realtime: dict) -> RealTimeSignal:
         """返回空信号"""

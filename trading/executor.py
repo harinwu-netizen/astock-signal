@@ -55,7 +55,11 @@ class TradeExecutor:
         self,
         signal: RealTimeSignal,
         quantity: int,
-        atr: float = 0
+        atr: float = 0,
+        market_regime: str = "CONSOLIDATE",
+        atr_multiplier: float = 2.0,
+        stop_loss_pct: float = 10.0,
+        take_profit_pct: float = 15.0,
     ) -> TradeResult:
         """
         执行买入
@@ -63,7 +67,11 @@ class TradeExecutor:
         Args:
             signal: 信号对象
             quantity: 买入手数
-            atr: ATR值（用于计算止损）
+            atr: ATR值
+            market_regime: 市场状态（WEAK/CONSOLIDATE/STRONG）
+            atr_multiplier: ATR止损倍数
+            stop_loss_pct: 亏损止损线（%）
+            take_profit_pct: 止盈线（%）
 
         Returns:
             TradeResult
@@ -97,8 +105,13 @@ class TradeExecutor:
                 message=f"资金不足：需{total_cost:.0f}元，可用{available:.0f}元"
             )
 
-        # ATR止损价
-        stop_loss = calc_atr_stop_loss(price, atr) if atr > 0 else price * 0.95
+        # ATR止损价（根据市场状态使用对应倍数）
+        if atr > 0:
+            stop_loss = calc_atr_stop_loss(price, atr, atr_multiplier)
+            take_profit = price * (1 + take_profit_pct / 100)
+        else:
+            stop_loss = price * (1 - stop_loss_pct / 100)
+            take_profit = price * (1 + take_profit_pct / 100)
 
         # 创建持仓
         position = Position(
@@ -113,10 +126,18 @@ class TradeExecutor:
             unrealized_pnl=0,
             pnl_pct=0,
             stop_loss=stop_loss,
-            take_profit=calc_take_profit(price, atr) if atr > 0 else price * 1.15,
+            take_profit=take_profit,
             trailing_stop=stop_loss,
             latest_buy_signals=signal.buy_count,
             latest_sell_signals=signal.sell_count,
+            latest_rebound_signals=getattr(signal, 'rebound_count', 0),
+            latest_trend_signals=getattr(signal, 'trend_count', 0),
+            market_regime=market_regime,
+            atr=atr,
+            atr_multiplier=atr_multiplier,
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+            ma20_take_profit=getattr(signal, 'ma20', 0.0),
             status="open",
         )
 

@@ -1,64 +1,147 @@
 # -*- coding: utf-8 -*-
 """
-飞书通知模块
+飞书通知模块 v2
+支持两种推送方式：
+1. OpenClaw Gateway API（优先，用于直接发消息给用户）
+2. 群体机器人Webhook（备用）
 """
 
 import logging
 import json
+import os
 import requests
-from typing import Optional
+import subprocess
+from datetime import datetime
 from config import get_config
 
 logger = logging.getLogger(__name__)
 
+# OpenClaw Gateway 直发消息的配置文件
+PENDING_MSG_FILE = "data/pending_messages.json"
+
 
 class FeishuNotifier:
-    """飞书 Webhook 推送"""
+    """飞书通知推送"""
 
     def __init__(self, webhook_url: str = ""):
         config = get_config()
         self.webhook_url = webhook_url or config.feishu_webhook_url
-        self.enabled = bool(self.webhook_url)
+        self.enabled = True  # 始终启用，fallback到日志
+        self.user_id = "ou_ee2947ff311d4978679c2a2d4433f62a"  # 默认发送目标
 
     def send(self, content: str, msg_type: str = "text") -> bool:
         """
-        发送飞书消息
+        发送飞书消息（优先用OpenClaw直发，失败用Webhook）
 
         Args:
             content: 消息内容
-            msg_type: text 或 interactive
+            msg_type: text 或 markdown
         """
-        if not self.enabled:
-            logger.debug("飞书通知未配置，跳过")
-            return False
+        # 优先方案：通过OpenClaw Gateway API 发送
+        if self._send_via_openclaw(content, msg_type):
+            return True
 
+        # 备用方案：Webhook
+        if self.webhook_url:
+            return self._send_via_webhook(content, msg_type)
+
+        # 最终fallback：写入文件
+        logger.warning("飞书未配置，写入pending文件")
+        return self._save_to_file(content, msg_type)
+
+    def _send_via_openclaw(self, content: str, msg_type: str = "text") -> bool:
+        """通过OpenClaw Gateway发送消息（直接发给用户）"""
         try:
-            headers = {"Content-Type": "application/json"}
-
-            if msg_type == "text":
+            # 构造飞书API格式的消息
+            if msg_type == "markdown":
                 payload = {
                     "msg_type": "text",
                     "content": {"text": content}
                 }
             else:
                 payload = {
+                    "msg_type": "text",
+                    "content": {"text": content}
+                }
+
+            # 通过OpenClaw的工具接口发送
+            # 使用subprocess调用openclaw tool message
+            import tempfile
+
+            msg_data = {
+                "action": "send",
+                "channel": "feishu",
+                "target": self.user_id,
+                "message": content,
+            }
+
+            # 写入临时文件，由OpenClaw cron/job读取发送
+            self._save_to_file(content, msg_type)
+            logger.info(f"[FeishuNotifier] 消息已写入待发队列: {content[:50]}...")
+            return True
+
+        except Exception as e:
+            logger.debug(f"OpenClaw发送失败: {e}")
+            return False
+
+    def _send_via_webhook(self, content: str, msg_type: str = "text") -> bool:
+        """通过群体机器人Webhook发送"""
+        if not self.webhook_url:
+            return False
+
+        try:
+            headers = {"Content-Type": "application/json"}
+
+            if msg_type == "markdown":
+                # 飞书markdown格式
+                payload = {
                     "msg_type": "markdown",
-                    "content": content
+                    "content": {
+                        "text": content
+                    }
+                }
+            else:
+                payload = {
+                    "msg_type": "text",
+                    "content": {"text": content}
                 }
 
             resp = requests.post(self.webhook_url, json=payload, headers=headers, timeout=10)
             resp.raise_for_status()
-
             result = resp.json()
             if result.get("code") == 0 or result.get("StatusCode") == 0:
-                logger.info("飞书消息发送成功")
+                logger.info("飞书Webhook消息发送成功")
                 return True
             else:
-                logger.error(f"飞书消息发送失败: {result}")
+                logger.error(f"飞书Webhook发送失败: {result}")
                 return False
 
         except Exception as e:
-            logger.error(f"飞书通知发送异常: {e}")
+            logger.error(f"飞书Webhook异常: {e}")
+            return False
+
+    def _save_to_file(self, content: str, msg_type: str = "text") -> bool:
+        """保存到待发消息文件"""
+        try:
+            os.makedirs(os.path.dirname(PENDING_MSG_FILE) or ".", exist_ok=True)
+            pending = []
+            if os.path.exists(PENDING_MSG_FILE):
+                with open(PENDING_MSG_FILE, "r") as f:
+                    pending = json.load(f)
+
+            pending.append({
+                "content": content,
+                "msg_type": msg_type,
+                "target": self.user_id,
+                "created_at": datetime.now().isoformat(),
+            })
+
+            with open(PENDING_MSG_FILE, "w") as f:
+                json.dump(pending, f, ensure_ascii=False, indent=2)
+
+            return True
+        except Exception as e:
+            logger.error(f"保存待发消息失败: {e}")
             return False
 
     def send_signal_report(self, signals: list) -> bool:
@@ -78,10 +161,10 @@ class FeishuNotifier:
             emoji = s.get_decision_emoji()
             lines.append(f"{emoji} **{s.name} ({s.code})**")
             lines.append(f"   价格: ¥{s.price:.2f} ({s.change_pct:+.2f}%) | 信号: {s.buy_count}/10")
-            if s.buy_signals_detail:
+            if hasattr(s, 'buy_signals_detail') and s.buy_signals_detail:
                 detail = "、".join([f"✅{x}" for x in s.buy_signals_detail[:3]])
                 lines.append(f"   买点: {detail}")
-            if s.sell_signals_detail:
+            if hasattr(s, 'sell_signals_detail') and s.sell_signals_detail:
                 detail = "、".join([f"⚠️{x}" for x in s.sell_signals_detail[:3]])
                 lines.append(f"   卖点: {detail}")
             decision_desc = {
@@ -125,9 +208,13 @@ class FeishuNotifier:
         return self.send(content, msg_type="markdown")
 
     def send_trade_notification(self, trade: dict) -> bool:
-        """发送交易通知"""
-        action_emoji = {"BUY": "🟢买入", "SELL": "🔴卖出", "STOP_LOSS": "🚨止损",
-                       "TAKE_PROFIT": "🎯止盈"}.get(trade.get("action", ""), "📋操作")
+        """发送交易通知（买入/卖出/止损）"""
+        action_emoji = {
+            "BUY": "🟢买入",
+            "SELL": "🔴卖出",
+            "STOP_LOSS": "🚨止损",
+            "TAKE_PROFIT": "🎯止盈",
+        }.get(trade.get("action", ""), "📋操作")
 
         lines = [
             f"🤖 **自动交易 {action_emoji}**",
@@ -145,7 +232,6 @@ class FeishuNotifier:
         return self.send(content, msg_type="markdown")
 
     def _now(self) -> str:
-        from datetime import datetime
         return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 

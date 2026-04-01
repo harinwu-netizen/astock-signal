@@ -682,7 +682,12 @@ def cmd_settings(args):
     print()
 
     if any([args.auto_trade, args.notify_only, args.max_positions,
-            args.total_capital, args.stop_loss, args.take_profit]):
+            args.total_capital, args.stop_loss, args.take_profit,
+            getattr(args, 'llm_enabled', None),
+            getattr(args, 'llm_provider', None),
+            getattr(args, 'llm_model', None),
+            getattr(args, 'llm_api_key', None),
+            getattr(args, 'llm_base_url', None)]):
         # 更新 .env 文件
         _update_env(args)
         reload_config()

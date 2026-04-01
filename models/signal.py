@@ -94,6 +94,25 @@ class RealTimeSignal:
     sell_signals: List[Signal] = field(default_factory=list)
     sell_count: int = 0
 
+    # ===== 弱市反弹信号（3指标，满足2个可考虑买入）=====
+    # 指标：RSI超卖反弹、价格接近前低、缩量企稳
+    rebound_signals: List[Signal] = field(default_factory=list)
+    rebound_count: int = 0
+
+    # ===== 强市趋势信号（3指标，满足2个可考虑买入）=====
+    # 指标：均线多头、MACD扩散、量价齐升
+    trend_signals: List[Signal] = field(default_factory=list)
+    trend_count: int = 0
+
+    # ===== 震荡市波段信号（v4.3新增）=====
+    # 买入：RSI适中回调、价格回踩均线、缩量整固（3指标满足2个）
+    consolidate_buy_signals: List[Signal] = field(default_factory=list)
+    consolidate_buy_count: int = 0
+    # 卖出：RSI回升、价格触及布林上轨、持仓超5天（3指标满足2个）
+    consolidate_sell_signals: List[Signal] = field(default_factory=list)
+    consolidate_sell_count: int = 0
+    bb_upper: float = 0.0   # 布林上轨（震荡市止盈用）
+
     # ===== 风控指标 =====
     atr_stop_loss: float = 0.0    # ATR止损价
     take_profit_price: float = 0.0 # 止盈价
@@ -117,6 +136,11 @@ class RealTimeSignal:
         d["market_status"] = self.market_status.value
         d["buy_signals"] = [s.to_dict() for s in self.buy_signals]
         d["sell_signals"] = [s.to_dict() for s in self.sell_signals]
+        d["rebound_signals"] = [s.to_dict() for s in self.rebound_signals]
+        d["trend_signals"] = [s.to_dict() for s in self.trend_signals]
+        d["consolidate_buy_signals"] = [s.to_dict() for s in self.consolidate_buy_signals]
+        d["consolidate_sell_signals"] = [s.to_dict() for s in self.consolidate_sell_signals]
+        d["bb_upper"] = self.bb_upper
         return d
 
     def get_decision_emoji(self) -> str:

@@ -33,12 +33,17 @@ class Scanner:
         self.counter = SignalCounter()
         self.market_filter = get_market_filter()
 
-    def scan_watchlist(self, watchlist: Watchlist = None) -> List[RealTimeSignal]:
+    def scan_watchlist(
+        self,
+        watchlist: Watchlist = None,
+        market_regime=None,  # MarketRegimeResult from watcher
+    ) -> List[RealTimeSignal]:
         """
         扫描整个股票池
 
         Args:
             watchlist: 股票池（不传则自动加载）
+            market_regime: MarketRegimeResult 对象（来自watcher），优先使用
 
         Returns:
             RealTimeSignal 列表
@@ -54,9 +59,21 @@ class Scanner:
 
         logger.info(f"开始扫描 {len(enabled_stocks)} 只股票...")
 
-        # 获取大盘状态
-        market_status, market_change = self.market_filter.get_market_status()
-        logger.info(f"大盘状态: {market_status.value} ({market_change:+.2f}%)")
+        # 确定市场状态：优先用watcher检测的结果，否则用market_filter
+        if market_regime is not None:
+            # 转换 MarketRegime -> MarketStatus
+            from indicators.market_regime import MarketRegime
+            regime_map = {
+                MarketRegime.STRONG: MarketStatus.STRONG,
+                MarketRegime.WEAK: MarketStatus.WEAK,
+                MarketRegime.CONSOLIDATE: MarketStatus.CONSOLIDATE,
+            }
+            market_status = regime_map.get(market_regime.regime, MarketStatus.CONSOLIDATE)
+            market_change = market_regime.index_change_pct_5d
+            logger.info(f"📊 市场状态（外部）: {market_regime.regime.value} — {market_regime.reason}")
+        else:
+            market_status, market_change = self.market_filter.get_market_status()
+            logger.info(f"📊 市场状态（内部）: {market_status.value} ({market_change:+.2f}%)")
 
         signals = []
         for entry in enabled_stocks:

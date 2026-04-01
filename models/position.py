@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 from config import get_config
+from models.signal import MarketStatus
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,16 @@ class Position:
     # 信号追踪
     latest_buy_signals: int = 0  # 最新买点信号数
     latest_sell_signals: int = 0  # 最新卖点信号数
+    latest_rebound_signals: int = 0  # 弱市反弹信号数（v4.0）
+    latest_trend_signals: int = 0  # 强市趋势信号数（v4.0）
+
+    # 开仓时市场状态（v4.0新增）
+    market_regime: MarketStatus = MarketStatus.CONSOLIDATE  # MarketStatus枚举
+    atr: float = 0.0             # ATR值（用于动态止损计算）
+    atr_multiplier: float = 2.0  # ATR止损倍数
+    stop_loss_pct: float = 10.0  # 亏损止损线（%）
+    take_profit_pct: float = 15.0  # 止盈线（%）
+    ma20_take_profit: float = 0.0  # 弱市MA20止盈目标价（v4.1新增）
 
     # 状态
     status: str = "open"   # open / closed / stopped
@@ -53,10 +64,32 @@ class Position:
         self.pnl_pct = (current_price - self.buy_price) / self.buy_price * 100
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        """序列化时将MarketStatus枚举转为字符串"""
+        d = {}
+        for k, v in self.__dict__.items():
+            if isinstance(v, MarketStatus):
+                d[k] = v.value
+            elif hasattr(v, '__dataclass_fields__'):
+                # 嵌套dataclass，递归处理（理论上暂无）
+                d[k] = asdict(v)
+            else:
+                d[k] = v
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Position":
+        """反序列化时将market_regime转回MarketStatus枚举"""
+        mr = d.get("market_regime")
+        if isinstance(mr, dict) and "value" in mr:
+            # 旧版 asdict() 格式：{'value': '震荡'} → 按value查找
+            mr = mr["value"]
+        if isinstance(mr, str):
+            # mr可能是中文value("震荡")，也可能是enum name("CONSOLIDATE")
+            try:
+                d["market_regime"] = MarketStatus(mr)  # 先按value查找
+            except ValueError:
+                # 按name查找（如 'CONSOLIDATE' → MarketStatus.CONSOLIDATE）
+                d["market_regime"] = MarketStatus[mr]
         return cls(**d)
 
 
