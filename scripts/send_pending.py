@@ -36,11 +36,11 @@ def send_via_openclaw(message: str, target: str, msg_type: str = "text") -> bool
         result = subprocess.run(
             ["openclaw", "message", "send",
              "--channel", "feishu",
-             "--to", target,
+             "--target", target,
              "--message", message],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=30,
         )
         if result.returncode == 0:
             logger.info(f"✅ 消息已发送: {message[:50]}...")

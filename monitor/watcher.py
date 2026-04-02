@@ -78,6 +78,12 @@ class Watcher:
         """watch模式: 等待到开仓窗口，然后开始扫描"""
         config = self.config
 
+        # 启动时先判断是否为交易日
+        now = datetime.now()
+        if now.weekday() >= 5:
+            logger.info(f"⛔ 今日({now.strftime('%Y-%m-%d')})为周末，非交易日，监控不启动")
+            return
+
         while not self._stop_requested:
             now = datetime.now()
             now_time = now.time()
@@ -110,8 +116,14 @@ class Watcher:
 
     def _run_scan_cycle(self):
         """执行一次完整的扫描周期"""
+        # 0. 判断是否为交易日（A股周末/节假日直接跳过）
+        today = datetime.now()
+        if today.weekday() >= 5:  # 周六=5, 周日=6
+            logger.info(f"⛔ 今日({today.strftime('%Y-%m-%d')})为周末，非交易日，跳过扫描")
+            return
+
         logger.info("=" * 60)
-        logger.info(f"🔍 扫描周期: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"🔍 扫描周期: {today.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 60)
 
         # 1. 检测市场状态（每周期只检测一次）

@@ -337,6 +337,12 @@ def cmd_watch(continuous: bool = False):
 
 def _run_watch_scan(watchlist, manual: bool = False):
     """执行一次watch扫描"""
+    # 非交易日（周末）直接跳过
+    today = datetime.now()
+    if today.weekday() >= 5:
+        print(f"⛔ 今日({today.strftime('%Y-%m-%d')})为周末，非交易日，跳过扫描")
+        return
+
     config = get_config()
     tx = TxStock()
     counter = SignalCounter()
@@ -344,7 +350,7 @@ def _run_watch_scan(watchlist, manual: bool = False):
     market_status, market_change = market_filter.get_market_status()
 
     print(f"\n{'='*60}")
-    print(f"🔍 扫描时间: {datetime.now().strftime('%H:%M:%S')} | 大盘: {market_status.value}({market_change:+.2f}%)")
+    print(f"🔍 扫描时间: {today.strftime('%H:%M:%S')} | 大盘: {market_status.value}({market_change:+.2f}%)")
     print(f"{'='*60}")
 
     signals = []
