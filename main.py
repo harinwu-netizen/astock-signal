@@ -41,6 +41,22 @@ from strategy.market_filter import get_market_filter, get_market_warning
 from trading.pre_check import PreTradeChecker
 from notification.feishu import get_feishu_notifier
 
+def is_trading_day() -> bool:
+    """判断今天是否为A股交易日（检查上证指数是否有今日数据）"""
+    from datetime import datetime
+    from data_provider.txstock import TxStock
+    try:
+        tx = TxStock()
+        hist = tx.get_history('sh000001', days=2)
+        if not hist:
+            return False
+        last_date = hist[-1].get('date', '')
+        today = datetime.now().strftime('%Y-%m-%d')
+        return last_date == today
+    except Exception:
+        # 数据获取失败时，保守假设是交易日（避免漏扫）
+        return True
+
 # ===== 日志配置 =====
 logging.basicConfig(
     level=logging.INFO,
@@ -339,7 +355,7 @@ def _run_watch_scan(watchlist, manual: bool = False):
     """执行一次watch扫描"""
     # 非交易日（周末）直接跳过
     today = datetime.now()
-    if today.weekday() >= 5:
+    if not is_trading_day():
         print(f"⛔ 今日({today.strftime('%Y-%m-%d')})为周末，非交易日，跳过扫描")
         return
 

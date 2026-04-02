@@ -14,7 +14,21 @@ import signal
 import sys
 from datetime import datetime, timedelta
 from typing import List, Optional
-from config import get_config
+def is_trading_day() -> bool:
+    """判断今天是否为A股交易日（非周末且市场有数据）"""
+    from datetime import datetime
+    from data_provider.txstock import TxStock
+    try:
+        tx = TxStock()
+        hist = tx.get_history('sh000001', days=2)
+        if not hist:
+            return False
+        last_date = hist[-1].get('date', '')
+        today = datetime.now().strftime('%Y-%m-%d')
+        return last_date == today
+    except Exception:
+        # 数据获取失败时，保守假设是交易日（避免漏扫）
+        return True
 from models.watchlist import WatchlistStore
 from models.position import PositionStore
 from models.signal import MarketStatus, Decision
@@ -80,7 +94,7 @@ class Watcher:
 
         # 启动时先判断是否为交易日
         now = datetime.now()
-        if now.weekday() >= 5:
+        if not is_trading_day():
             logger.info(f"⛔ 今日({now.strftime('%Y-%m-%d')})为周末，非交易日，监控不启动")
             return
 
@@ -118,7 +132,7 @@ class Watcher:
         """执行一次完整的扫描周期"""
         # 0. 判断是否为交易日（A股周末/节假日直接跳过）
         today = datetime.now()
-        if today.weekday() >= 5:  # 周六=5, 周日=6
+        if not is_trading_day():
             logger.info(f"⛔ 今日({today.strftime('%Y-%m-%d')})为周末，非交易日，跳过扫描")
             return
 
