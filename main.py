@@ -347,8 +347,14 @@ def cmd_watch(continuous: bool = False):
         print("⚠️  当前不在开仓时间窗口(14:30-15:00)，watch模式将在指定时间自动执行")
         print("   如需持续测试，可使用: watch --continuous")
 
-    # 执行扫描
-    _run_watch_scan(watchlist, manual=True)
+    if continuous:
+        # 持续监控模式（调用Watcher类）
+        from monitor.watcher import Watcher
+        w = Watcher()
+        w.start(continuous=True)
+    else:
+        # 单次扫描（cron触发走这里）
+        _run_watch_scan(watchlist, manual=True)
 
 
 def _run_watch_scan(watchlist, manual: bool = False):
