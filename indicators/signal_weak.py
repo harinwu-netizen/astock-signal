@@ -102,13 +102,13 @@ def analyze_weak(
     # ===== 计算3个买入指标 =====
     buy_triggered = []
 
-    # 指标1: RSI超卖反弹（放宽到40，RSI<30只有13%日子）
+    # 指标1: RSI超卖反弹（严格：RSI<30才算超卖，RSI<35算偏低）
     if rsi < 30 and rsi > prev_rsi:
         buy_triggered.append("RSI超卖反弹")
         result.buy_signals.append(f"RSI={rsi:.1f}<30 拐头↑")
-    elif rsi < 40:
+    elif rsi < 35:
         buy_triggered.append("RSI偏低")
-        result.buy_signals.append(f"RSI={rsi:.1f}<40 偏低")
+        result.buy_signals.append(f"RSI={rsi:.1f}<35 偏低")
 
     # 指标2: 触及布林下轨
     if bb_lower > 0 and current_price <= bb_lower * 1.02:
@@ -122,17 +122,18 @@ def analyze_weak(
 
     result.buy_count = len(buy_triggered)
 
-    # ===== 卖出信号（熊市反弹：RSI>45止盈，RSI>55强止盈）=====
-    if rsi > 55:
-        result.sell_signals.append(f"RSI={rsi:.1f}>55 强止盈")
+    # ===== 卖出信号（弱市：让利润跑，不主动止盈）=====
+    # 弱市不主动止盈（RSI45/55太早下车），只认趋势破坏和硬止损
+    # RSI进入超买区才考虑走（给反弹足够空间）
+    if rsi > 70:
+        result.sell_signals.append(f"RSI={rsi:.1f}>70 超买")
         result.sell_count += 1
-    elif rsi > 45:
-        result.sell_signals.append(f"RSI={rsi:.1f}>45 止盈")
+    elif rsi > 65:
+        result.sell_signals.append(f"RSI={rsi:.1f}>65 止盈")
         result.sell_count += 1
 
-    # 弱市：硬止损更严（-2%）
+    # 弱市：硬止损 -2%（不抗单）
     if buy_price > 0:
-        loss_pct = (current_price - buy_price) / buy_price * 100
         if current_price <= buy_price * 0.98:
             result.decision = "STOP_LOSS"
             result.sell_signals.append("触发-2%硬止损")
@@ -142,12 +143,12 @@ def analyze_weak(
     # 弱市买入：3指标满足至少2个
     if len(buy_triggered) >= 2:
         result.decision = "BUY"
-        result.position_ratio = min(0.1 * len(buy_triggered), 0.2)  # 2个=20%, 3个=30%
+        result.position_ratio = min(0.1 * len(buy_triggered), 0.2)
     elif buy_price > 0:
-        # 持仓中：RSI>55 强止盈，RSI>45 止盈
-        if rsi > 55:
+        # 持仓中：让利润跑，RSI>65才止盈，RSI>70超买强走
+        if rsi > 70:
             result.decision = "SELL"
-        elif rsi > 45:
+        elif rsi > 65:
             result.decision = "TAKE_PROFIT"
         else:
             result.decision = "HOLD"
