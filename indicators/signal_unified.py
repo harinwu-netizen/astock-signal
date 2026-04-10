@@ -88,6 +88,66 @@ class UnifiedSignal:
         return self.strong.buy_count if self.strong else 0
 
     @property
+    def trend_status(self):
+        """兼容：基于市场状态的简单趋势判断"""
+        from models.signal import TrendStatus
+        mapping = {
+            MarketStatus.STRONG: TrendStatus.STRONG_BULL,
+            MarketStatus.WEAK: TrendStatus.WEAK_BEAR,
+            MarketStatus.CONSOLIDATE: TrendStatus.CONSOLIDATION,
+        }
+        return mapping.get(self.market_status, TrendStatus.CONSOLIDATION)
+
+    def get_trend_emoji(self) -> str:
+        """获取趋势emoji"""
+        mapping = {
+            "STRONG_BULL": "🟢⬆️",
+            "BULL": "🟢",
+            "WEAK_BULL": "🟡⬆️",
+            "CONSOLIDATION": "🟡",
+            "WEAK_BEAR": "🔴⬇️",
+            "BEAR": "🔴",
+            "STRONG_BEAR": "🔴⬇️",
+        }
+        return mapping.get(str(self.trend_status).split('.')[-1], "⚪")
+
+    def get_decision_emoji(self) -> str:
+        """兼容：获取决策emoji"""
+        mapping = {
+            "BUY": "🟢",
+            "HOLD": "🟡",
+            "SELL": "🔴",
+            "WATCH": "⚪",
+            "STOP_LOSS": "🚨",
+            "TAKE_PROFIT": "🎯",
+        }
+        return mapping.get(self.primary_decision, "⚪")
+
+    @property
+    def macd_dif(self) -> float:
+        """兼容：MACD DIF值"""
+        return self.strong.dif if self.strong else 0.0
+
+    @property
+    def macd_dea(self) -> float:
+        """兼容：MACD DEA值"""
+        return getattr(self.strong, 'dea', 0.0)
+
+    @property
+    def atr_stop_loss(self) -> float:
+        """兼容：ATR止损价格"""
+        if self.atr > 0:
+            return self.price - self.atr * 2.0
+        return self.price * 0.95
+
+    @property
+    def take_profit_price(self) -> float:
+        """兼容：止盈价格"""
+        if self.atr > 0:
+            return self.price + self.atr * 3.0
+        return self.price * 1.10
+
+    @property
     def consolidate_buy_count(self) -> int:
         """兼容：震荡市买入信号数"""
         return self.consolidate.buy_count if self.consolidate else 0
