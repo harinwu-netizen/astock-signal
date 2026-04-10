@@ -107,58 +107,66 @@ def analyze_consolidate(
     # ===== 计算3个买入指标 =====
     buy_triggered = []
 
-    # 指标1: RSI适中回调（30~58区间，不是超卖也不是超买；与止盈阈值60之间留缓冲）
-    if 30 <= rsi <= 58:
-        buy_triggered.append("RSI适中回调")
-        result.buy_signals.append(f"RSI={rsi:.1f}在[30,58]区间")
-    elif rsi < 30:
+    # 指标1: RSI低位拐头（RSI(14)在35~50区间且处于局部低位，比"适中回调"更有底部信号）
+    rsi_prev = calc_rsi(closes[:-1], 14) if len(closes) >= 2 else rsi
+    rsi_bottom = 35 <= rsi <= 50 and rsi < rsi_prev  # RSI在低位且拐头向下（还没反弹）
+    rsi_recovering = 35 <= rsi <= 55 and rsi >= rsi_prev and rsi_prev < rsi  # RSI从低位开始回升
+    if rsi_bottom or rsi_recovering:
+        buy_triggered.append("RSI低位整固")
+        result.buy_signals.append(f"RSI={rsi:.1f}低位整固({rsi_prev:.1f}→{rsi:.1f})")
+    elif rsi < 35:
         buy_triggered.append("RSI偏低")
-        result.buy_signals.append(f"RSI={rsi:.1f}<30 偏低")
+        result.buy_signals.append(f"RSI={rsi:.1f}<35 偏低")
 
-    # 指标2: 价格回踩布林中轨/下轨
-    price_near_lower = bb_lower > 0 and current_price <= bb_lower * 1.02
-    price_near_middle = bb_middle > 0 and current_price <= bb_middle * 1.01
-    if price_near_lower or price_near_middle:
-        buy_triggered.append("回踩均线支撑")
-        if price_near_lower:
-            result.buy_signals.append(f"回踩布林下轨({bb_lower:.2f})")
-        else:
-            result.buy_signals.append(f"回踩布林中轨({bb_middle:.2f})")
+    # 指标2: 价格回踩布林下轨（严格：必须在下轨附近才算有效支撑）
+    price_near_lower = bb_lower > 0 and current_price <= bb_lower * 1.01
+    if price_near_lower:
+        buy_triggered.append("回踩布林下轨")
+        result.buy_signals.append(f"回踩布林下轨({bb_lower:.2f})")
 
-    # 指标3: 缩量整固
-    if result.volume_ratio < 0.8:
+    # 指标3: 缩量整固（严格：量比<0.7，缩量明显）
+    if result.volume_ratio < 0.7:
         buy_triggered.append("缩量整固")
-        result.buy_signals.append(f"量比={result.volume_ratio:.2f}<0.8")
+        result.buy_signals.append(f"量比={result.volume_ratio:.2f}<0.7")
 
     result.buy_count = len(buy_triggered)
 
     # ===== 卖出信号 =====
-    # 触及布林上轨
+    # 触及布林上轨（区间上沿，高抛）
     if bb_upper > 0 and current_price >= bb_upper * 0.98:
         result.sell_signals.append(f"触及布林上轨({bb_upper:.2f})")
         result.sell_count += 1
+
+    # RSI从反弹位回落（恢复失败，平仓）
+    if len(closes) >= 3:
+        rsi_prev1 = calc_rsi(closes[:-1], 14)
+        rsi_prev2 = calc_rsi(closes[:-2], 14)
+        # RSI从较高位置回落（反弹结束信号）
+        if rsi_prev1 > rsi_prev2 and rsi < rsi_prev1 and rsi_prev1 >= 55:
+            result.sell_signals.append(f"RSI回落({rsi_prev1:.1f}→{rsi:.1f})")
+            result.sell_count += 1
 
     # RSI超买（互斥，只触发一个）
     if rsi > 65:
         result.sell_signals.append(f"RSI={rsi:.1f}>65 超买")
         result.sell_count += 1
-    # RSI回到正常偏强（>60才止盈，给波段更多空间）
+    # RSI回到正常偏强（>60止盈）
     elif rsi > 60:
         result.sell_signals.append(f"RSI={rsi:.1f}>60 止盈")
         result.sell_count += 1
 
-    # ===== 持仓中止损 =====
+    # ===== 持仓中止损（放宽，给波动空间）=====
     if buy_price > 0:
-        # ATR止损
+        # ATR止损（从 0.5ATR 放宽到 1.5ATR，正常波动不触发）
         if result.atr > 0:
-            stop_price = bb_lower - result.atr * 0.5
+            stop_price = bb_lower - result.atr * 1.5
             if current_price <= stop_price:
                 result.decision = "STOP_LOSS"
                 result.sell_signals.append(f"ATR止损({stop_price:.2f})")
                 return result
-        # 固定止损 -8%
+        # 固定止损 -10%（从-8%放宽到-10%）
         loss_pct = (current_price - buy_price) / buy_price * 100
-        if loss_pct <= -8:
+        if loss_pct <= -10:
             result.decision = "STOP_LOSS"
             result.sell_signals.append(f"亏损{loss_pct:.1f}%超限")
             return result
