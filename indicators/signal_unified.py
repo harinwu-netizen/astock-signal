@@ -216,6 +216,13 @@ def analyze_unified(
             else:
                 decision = "BUY"
                 reason = f"[{market_status.value}] {' + '.join(primary.buy_signals)}"
+        elif market_status == MarketStatus.STRONG:
+            if cons_sig.rsi_14 > 60:
+                decision = "WATCH"
+                reason = f"【否决】全局RSI({cons_sig.rsi_14:.1f})>60，不追强市"
+            else:
+                decision = "BUY"
+                reason = f"[{market_status.value}] {' + '.join(primary.buy_signals)}"
         else:
             decision = "BUY"
             reason = f"[{market_status.value}] {' + '.join(primary.buy_signals)}"

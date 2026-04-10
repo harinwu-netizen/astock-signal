@@ -122,12 +122,12 @@ def analyze_weak(
 
     result.buy_count = len(buy_triggered)
 
-    # ===== 卖出信号 =====
-    if rsi > 65:
-        result.sell_signals.append(f"RSI={rsi:.1f}>65 强制止盈")
+    # ===== 卖出信号（熊市反弹：RSI>45止盈，RSI>55强止盈）=====
+    if rsi > 55:
+        result.sell_signals.append(f"RSI={rsi:.1f}>55 强止盈")
         result.sell_count += 1
-    elif rsi > 50:
-        result.sell_signals.append(f"RSI={rsi:.1f}>50 止盈")
+    elif rsi > 45:
+        result.sell_signals.append(f"RSI={rsi:.1f}>45 止盈")
         result.sell_count += 1
 
     # 弱市：硬止损更严（-2%）
@@ -144,10 +144,10 @@ def analyze_weak(
         result.decision = "BUY"
         result.position_ratio = min(0.1 * len(buy_triggered), 0.2)  # 2个=20%, 3个=30%
     elif buy_price > 0:
-        # 持仓中
-        if rsi > 65:
+        # 持仓中：RSI>55 强止盈，RSI>45 止盈
+        if rsi > 55:
             result.decision = "SELL"
-        elif rsi > 50:
+        elif rsi > 45:
             result.decision = "TAKE_PROFIT"
         else:
             result.decision = "HOLD"

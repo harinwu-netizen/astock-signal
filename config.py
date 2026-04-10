@@ -72,7 +72,7 @@ class Config:
 
     # 强市趋势策略
     strong_trend_min_signals: int = 2          # 强市趋势：3指标中至少满足2个
-    strong_stop_loss_pct: float = 8.0          # 强市亏损止损线（%）：收紧到8%，配合MA20跟踪止损
+    strong_stop_loss_pct: float = 10.0          # 强市亏损止损线（%）：10%，配合MA20跟踪止损
     strong_take_profit_pct: float = 25.0         # 强市止盈线（%）：让利润奔跑
     strong_atr_multiplier: float = 2.0          # 强市ATR止损倍数（给波动空间，MA20为主要防线）
     strong_max_hold_days: int = 30              # 强市最大持仓天数
@@ -183,7 +183,7 @@ class Config:
             weak_open_window_start=os.getenv("WEAK_OPEN_WINDOW_START", "09:30"),
             # 强市趋势
             strong_trend_min_signals=int(os.getenv("STRONG_TREND_MIN_SIGNALS", "2")),
-            strong_stop_loss_pct=float(os.getenv("STRONG_STOP_LOSS_PCT", "8.0")),
+            strong_stop_loss_pct=float(os.getenv("STRONG_STOP_LOSS_PCT", "10.0")),
             strong_take_profit_pct=float(os.getenv("STRONG_TAKE_PROFIT_PCT", "25.0")),
             strong_atr_multiplier=float(os.getenv("STRONG_ATR_MULTIPLIER", "2.0")),
             strong_max_hold_days=int(os.getenv("STRONG_MAX_HOLD_DAYS", "30")),

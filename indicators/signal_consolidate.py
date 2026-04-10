@@ -107,10 +107,10 @@ def analyze_consolidate(
     # ===== 计算3个买入指标 =====
     buy_triggered = []
 
-    # 指标1: RSI适中回调（30~60区间，不是超卖也不是超买）
-    if 30 <= rsi <= 60:
+    # 指标1: RSI适中回调（30~58区间，不是超卖也不是超买；与止盈阈值60之间留缓冲）
+    if 30 <= rsi <= 58:
         buy_triggered.append("RSI适中回调")
-        result.buy_signals.append(f"RSI={rsi:.1f}在[30,60]区间")
+        result.buy_signals.append(f"RSI={rsi:.1f}在[30,58]区间")
     elif rsi < 30:
         buy_triggered.append("RSI偏低")
         result.buy_signals.append(f"RSI={rsi:.1f}<30 偏低")
@@ -138,14 +138,13 @@ def analyze_consolidate(
         result.sell_signals.append(f"触及布林上轨({bb_upper:.2f})")
         result.sell_count += 1
 
-    # RSI超买
+    # RSI超买（互斥，只触发一个）
     if rsi > 65:
         result.sell_signals.append(f"RSI={rsi:.1f}>65 超买")
         result.sell_count += 1
-
-    # RSI回到正常偏强（>55）
-    if rsi > 55:
-        result.sell_signals.append(f"RSI={rsi:.1f}>55 止盈")
+    # RSI回到正常偏强（>60才止盈，给波段更多空间）
+    elif rsi > 60:
+        result.sell_signals.append(f"RSI={rsi:.1f}>60 止盈")
         result.sell_count += 1
 
     # ===== 持仓中止损 =====
