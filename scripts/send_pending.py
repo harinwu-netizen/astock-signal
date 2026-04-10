@@ -40,7 +40,7 @@ def send_via_openclaw(message: str, target: str, msg_type: str = "text") -> bool
              "--message", message],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=120,  # 飞书长消息需要更长时间
         )
         if result.returncode == 0:
             logger.info(f"✅ 消息已发送: {message[:50]}...")
@@ -87,8 +87,9 @@ def main():
                 time.sleep(5)
                 continue
 
-            # 发送第一条
+            # 发送第一条（最多重试3次，3次失败则丢弃）
             msg = pending[0]
+            retry_count = msg.get("__retry", 0)
             sent = False
 
             # 方式1: openclaw CLI
@@ -106,6 +107,20 @@ def main():
                 state["count"] += 1
                 save_state(state)
                 logger.info(f"📤 已发送 {state['count']} 条消息")
+            else:
+                # 重试超过3次则丢弃，避免无限重试
+                if retry_count >= 3:
+                    pending.pop(0)
+                    with open(PENDING_FILE, "w") as f:
+                        json.dump(pending, f, ensure_ascii=False, indent=2)
+                    logger.warning(f"⚠️ 消息发送失败已丢弃（重试{retry_count}次）: {msg.get('content','')[:50]}...")
+                else:
+                    # 标记重试次数并写回
+                    msg["__retry"] = retry_count + 1
+                    pending[0] = msg
+                    with open(PENDING_FILE, "w") as f:
+                        json.dump(pending, f, ensure_ascii=False, indent=2)
+                    logger.info(f"⏳ 发送失败，{5*(retry_count+1)}秒后重试（第{retry_count+1}次）")
 
         except json.JSONDecodeError:
             pass

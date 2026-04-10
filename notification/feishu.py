@@ -50,38 +50,52 @@ class FeishuNotifier:
         return self._save_to_file(content, msg_type)
 
     def _send_via_openclaw(self, content: str, msg_type: str = "text") -> bool:
-        """通过OpenClaw Gateway发送消息（直接发给用户）"""
+        """通过OpenClaw Gateway HTTP API发送消息（直接发给用户）"""
         try:
-            # 构造飞书API格式的消息
-            if msg_type == "markdown":
-                payload = {
-                    "msg_type": "text",
-                    "content": {"text": content}
-                }
+            import requests
+            resp = requests.post(
+                "http://localhost:18789/api/message/send",
+                json={
+                    "channel": "feishu",
+                    "target": self.user_id,
+                    "message": content,
+                },
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                logger.info(f"[FeishuNotifier] Gateway API发送成功")
+                return True
             else:
-                payload = {
-                    "msg_type": "text",
-                    "content": {"text": content}
-                }
-
-            # 通过OpenClaw的工具接口发送
-            # 使用subprocess调用openclaw tool message
-            import tempfile
-
-            msg_data = {
-                "action": "send",
-                "channel": "feishu",
-                "target": self.user_id,
-                "message": content,
-            }
-
-            # 写入临时文件，由OpenClaw cron/job读取发送
-            self._save_to_file(content, msg_type)
-            logger.info(f"[FeishuNotifier] 消息已写入待发队列: {content[:50]}...")
-            return True
-
+                logger.warning(f"[FeishuNotifier] Gateway API返回 {resp.status_code}: {resp.text[:100]}")
+                return False
+        except ImportError:
+            logger.warning("requests库不可用，尝试subprocess")
+            return self._send_via_subprocess(content, msg_type)
         except Exception as e:
-            logger.debug(f"OpenClaw发送失败: {e}")
+            logger.warning(f"[FeishuNotifier] Gateway API发送失败: {e}")
+            return False
+
+    def _send_via_subprocess(self, content: str, msg_type: str = "text") -> bool:
+        """通过subprocess调用openclaw CLI发送（备用）"""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["openclaw", "message", "send",
+                 "--channel", "feishu",
+                 "--target", self.user_id,
+                 "--message", content],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode == 0:
+                logger.info(f"[FeishuNotifier] CLI发送成功")
+                return True
+            else:
+                logger.warning(f"[FeishuNotifier] CLI发送失败: {result.stderr[:100]}")
+                return False
+        except Exception as e:
+            logger.warning(f"[FeishuNotifier] CLI发送异常: {e}")
             return False
 
     def _send_via_webhook(self, content: str, msg_type: str = "text") -> bool:

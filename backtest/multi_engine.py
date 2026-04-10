@@ -203,7 +203,8 @@ class MultiStockBacktestEngine:
         idx_date_to_idx = {d["date"]: i for i, d in enumerate(idx_hist)}
 
         # ---- 回测日期基准 ----
-        ref_hist = stock_hists["000629"]
+        ref_code = list(stock_hists.keys())[0]
+        ref_hist = stock_hists[ref_code]
         bt_hist = ref_hist[20:]
         bt_dates = [d["date"] for d in bt_hist]
 
@@ -253,9 +254,12 @@ class MultiStockBacktestEngine:
                     "price": closes[code], "change_pct": 0,
                     "volume": volumes[code],
                 }
+                # v5.0: 持仓股传入 buy_price，信号系统才知道在持仓状态
+                pos = next((p for p in positions if p.code == code), None)
+                bp = pos.buy_price if pos else 0.0
                 try:
                     signals[code] = self.counter.count_signals(
-                        window, rt, market_status=market_status, buy_price=0
+                        window, rt, market_status=market_status, buy_price=bp
                     )
                 except Exception:
                     continue
@@ -284,41 +288,31 @@ class MultiStockBacktestEngine:
                 ).days
                 upct = pos.unrealized_pct(close)
 
+                # ============================================================== #
+                #  v5.0 退出逻辑：信号系统驱动，引擎做安全网
+                # ============================================================== #
                 triggered = None
 
-                # 1. ATR追踪止损
-                if close <= sl:
-                    triggered = ("止损", f"ATR@{sl:.2f}")
-                # 2. 超期平仓（非弱市）
-                elif pos.market_regime != MarketStatus.WEAK and hold_days >= pos.max_hold_days:
-                    triggered = ("超期平仓", f"持仓{hold_days}天>{pos.max_hold_days}天")
-                # 3. 亏损止损
+                # 0. P0 止损：信号系统发 STOP_LOSS（最高优先级）
+                if sig and sig.decision == Decision.STOP_LOSS:
+                    triggered = ("止损", f"信号STOP_LOSS")
+
+                # 1. 信号系统发 SELL（主要退出）
+                elif sig and sig.decision == Decision.SELL:
+                    triggered = ("卖出", f"信号SELL({sig.sell_signals_detail})")
+
+                # 2. 信号系统发 TAKE_PROFIT
+                elif sig and sig.decision == Decision.TAKE_PROFIT:
+                    triggered = ("止盈", f"信号TAKE_PROFIT({sig.sell_signals_detail})")
+
+                # 3. 安全网1：亏损超过容忍线（最后防线）
                 elif upct <= -pos.stop_loss_pct:
-                    triggered = ("止损", f"亏{upct:.1f}%")
-                # 4. 弱市MA20止盈
-                elif (pos.market_regime == MarketStatus.WEAK
-                      and pos.ma20_take_profit > 0
-                      and close >= pos.ma20_take_profit):
-                    triggered = ("止盈", f"MA20({close:.2f}>={pos.ma20_take_profit:.2f})")
-                # 5. 弱市RSI反弹到位
-                elif (pos.market_regime == MarketStatus.WEAK
-                      and sig
-                      and sig.rsi_6 > self.cfg.weak_rsi_sell_threshold):
-                    triggered = ("卖出", f"RSI>{sig.rsi_6:.0f}")
-                # 6. 震荡市波段止盈（v4.3新增：RSI>55 或 触及布林上轨）
-                elif pos.market_regime == MarketStatus.CONSOLIDATE:
-                    bb_upper = (sig.bb_upper if sig else 0.0) or pos.bb_upper
-                    rsi_val = sig.rsi_6 if sig else 0.0
-                    if rsi_val > 55:
-                        triggered = ("止盈", f"RSI>{rsi_val:.0f}波段止盈")
-                    elif bb_upper > 0 and close >= bb_upper * 0.98:
-                        triggered = ("止盈", f"触及布林上轨({close:.2f}>={bb_upper*0.98:.2f})")
-                    elif upct >= pos.take_profit_pct:
-                        triggered = ("止盈", f"+{upct:.1f}%")
-                # 7. 强市固定止盈
-                elif (pos.market_regime == MarketStatus.STRONG
-                      and upct >= pos.take_profit_pct):
-                    triggered = ("止盈", f"+{upct:.1f}%")
+                    triggered = ("止损", f"安全网亏{upct:.1f}%")
+
+                # 4. 安全网2：信号系统发 HOLD 但持仓超30天，强制检视
+                elif hold_days >= 30:
+                    # 只在超长期持仓时给个警告，不自动卖
+                    pass
 
                 if triggered:
                     trade_seq += 1

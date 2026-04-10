@@ -40,17 +40,17 @@ class Config:
     atr_stop_multiplier: float = 2.0    # ATR止损倍数（震荡市）
 
     # 开仓时间窗口
-    open_window_start: str = "14:30"   # 开仓窗口开始
+    open_window_start: str = "09:30"   # 开仓窗口开始（全天可交易）
     open_window_end: str = "15:00"      # 开仓窗口结束
 
-    # ===== 弱强市策略参数（v4.0新增）=====
+    # ===== 弱强市策略参数（v5.0新架构）=====
     # 弱市反弹策略
-    weak_rebound_rsi_max: float = 35.0      # RSI(6)超卖阈值
+    weak_rebound_rsi_max: float = 40.0      # RSI(6)偏低阈值（放宽到40，对应约25%的交易日）
     weak_rebound_price_near_low: float = 1.05  # 价格接近布林下轨/前低倍数
-    weak_rebound_volume_ratio_max: float = 0.75  # 缩量上限（<均量×0.75）
+    weak_rebound_volume_ratio_max: float = 0.6   # 缩量上限（<均量×0.6）
     weak_rebound_min_signals: int = 2          # 弱市反弹：3指标中至少满足2个
-    weak_stop_loss_pct: float = 3.0            # 弱市亏损止损线（%）
-    weak_take_profit_pct: float = 8.0          # 弱市止盈线（%）
+    weak_stop_loss_pct: float = 2.0            # 弱市亏损止损线（%）：硬止损-2%，不抗单
+    weak_take_profit_pct: float = 8.0          # 弱市止盈线（%）：RSI>50即走
     weak_atr_multiplier: float = 3.0           # 弱市ATR止损倍数（v4.2: 2.0→3.0，减少被扫）
 
     # ===== v4.2 新增参数 =====
@@ -68,23 +68,23 @@ class Config:
     weak_rsi_sell_threshold: float = 65.0       # 弱市RSI反弹到位阈值
     weak_single_position_pct: float = 10.0      # 弱市单只仓位上限（%）
     weak_total_position_pct: float = 30.0      # 弱市总仓位上限（%）
-    weak_open_window_start: str = "14:00"      # 弱市开仓时间窗口开始（须等走势确认）
+    weak_open_window_start: str = "09:30"      # 弱市开仓时间窗口开始（须等走势确认）
 
     # 强市趋势策略
     strong_trend_min_signals: int = 2          # 强市趋势：3指标中至少满足2个
-    strong_stop_loss_pct: float = 15.0          # 强市亏损止损线（%）
-    strong_take_profit_pct: float = 25.0         # 强市止盈线（%）
-    strong_atr_multiplier: float = 3.0          # 强市ATR止损倍数（给波动空间）
+    strong_stop_loss_pct: float = 8.0          # 强市亏损止损线（%）：收紧到8%，配合MA20跟踪止损
+    strong_take_profit_pct: float = 25.0         # 强市止盈线（%）：让利润奔跑
+    strong_atr_multiplier: float = 2.0          # 强市ATR止损倍数（给波动空间，MA20为主要防线）
     strong_max_hold_days: int = 30              # 强市最大持仓天数
     strong_single_position_pct: float = 30.0    # 强市单只仓位上限（%）
     strong_total_position_pct: float = 80.0     # 强市总仓位上限（%）
 
-    # 震荡市策略（维持原逻辑，仅调整注释）
-    consolidate_min_signals: int = 5             # 震荡市买入信号阈值
-    consolidate_sell_signals: int = 3            # 震荡市卖出信号阈值
-    consolidate_stop_loss_pct: float = 10.0     # 震荡市止损线（%）
-    consolidate_take_profit_pct: float = 15.0   # 震荡市止盈线（%）
-    consolidate_atr_multiplier: float = 2.0     # 震荡市ATR止损倍数
+    # 震荡市策略
+    consolidate_min_signals: int = 2             # 震荡市买入信号阈值：3指标满足2个
+    consolidate_sell_signals: int = 1            # 震荡市卖出信号阈值：1个即考虑卖
+    consolidate_stop_loss_pct: float = 6.0     # 震荡市止损线（%）：收紧到6%
+    consolidate_take_profit_pct: float = 15.0   # 震荡市止盈线（%）：布林上轨或RSI>65
+    consolidate_atr_multiplier: float = 1.5     # 震荡市ATR止损倍数：收紧
     consolidate_max_hold_days: int = 10         # 震荡市最大持仓天数
     consolidate_single_position_pct: float = 20.0  # 震荡市单只仓位上限（%）
     consolidate_total_position_pct: float = 60.0  # 震荡市总仓位上限（%）
@@ -159,18 +159,18 @@ class Config:
             stop_loss_pct=float(os.getenv("STOP_LOSS_PCT", "10.0")),
             take_profit_pct=float(os.getenv("TAKE_PROFIT_PCT", "15.0")),
             atr_stop_multiplier=float(os.getenv("ATR_STOP_MULTIPLIER", "2.0")),
-            open_window_start=os.getenv("OPEN_WINDOW_START", "14:30"),
+            open_window_start=os.getenv("OPEN_WINDOW_START", "09:30"),
             open_window_end=os.getenv("OPEN_WINDOW_END", "15:00"),
 
             # ===== 弱强市策略参数（v4.0）=====
             # 弱市反弹
-            weak_rebound_rsi_max=float(os.getenv("WEAK_REBOUND_RSI_MAX", "35.0")),
+            weak_rebound_rsi_max=float(os.getenv("WEAK_REBOUND_RSI_MAX", "40.0")),
             weak_rebound_price_near_low=float(os.getenv("WEAK_REBOUND_PRICE_NEAR_LOW", "1.05")),
-            weak_rebound_volume_ratio_max=float(os.getenv("WEAK_REBOUND_VOLUME_RATIO_MAX", "0.75")),
+            weak_rebound_volume_ratio_max=float(os.getenv("WEAK_REBOUND_VOLUME_RATIO_MAX", "0.6")),
             weak_rebound_min_signals=int(os.getenv("WEAK_REBOUND_MIN_SIGNALS", "2")),
-            weak_stop_loss_pct=float(os.getenv("WEAK_STOP_LOSS_PCT", "3.0")),
+            weak_stop_loss_pct=float(os.getenv("WEAK_STOP_LOSS_PCT", "2.0")),
             weak_take_profit_pct=float(os.getenv("WEAK_TAKE_PROFIT_PCT", "8.0")),
-            weak_atr_multiplier=float(os.getenv("WEAK_ATR_MULTIPLIER", "3.0")),
+            weak_atr_multiplier=float(os.getenv("WEAK_ATR_MULTIPLIER", "2.0")),
             strong_rsi_exit_threshold=float(os.getenv("STRONG_RSI_EXIT_THRESHOLD", "80.0")),
             consecutive_stop_loss_lock=int(os.getenv("CONSECUTIVE_STOP_LOSS_LOCK", "2")),
             consecutive_stop_loss_lock_days=int(os.getenv("CONSECUTIVE_STOP_LOSS_LOCK_DAYS", "5")),
@@ -180,21 +180,21 @@ class Config:
             weak_rsi_sell_threshold=float(os.getenv("WEAK_RSI_SELL_THRESHOLD", "65.0")),
             weak_single_position_pct=float(os.getenv("WEAK_SINGLE_POSITION_PCT", "10.0")),
             weak_total_position_pct=float(os.getenv("WEAK_TOTAL_POSITION_PCT", "30.0")),
-            weak_open_window_start=os.getenv("WEAK_OPEN_WINDOW_START", "14:00"),
+            weak_open_window_start=os.getenv("WEAK_OPEN_WINDOW_START", "09:30"),
             # 强市趋势
             strong_trend_min_signals=int(os.getenv("STRONG_TREND_MIN_SIGNALS", "2")),
-            strong_stop_loss_pct=float(os.getenv("STRONG_STOP_LOSS_PCT", "15.0")),
+            strong_stop_loss_pct=float(os.getenv("STRONG_STOP_LOSS_PCT", "8.0")),
             strong_take_profit_pct=float(os.getenv("STRONG_TAKE_PROFIT_PCT", "25.0")),
-            strong_atr_multiplier=float(os.getenv("STRONG_ATR_MULTIPLIER", "3.0")),
+            strong_atr_multiplier=float(os.getenv("STRONG_ATR_MULTIPLIER", "2.0")),
             strong_max_hold_days=int(os.getenv("STRONG_MAX_HOLD_DAYS", "30")),
             strong_single_position_pct=float(os.getenv("STRONG_SINGLE_POSITION_PCT", "30.0")),
             strong_total_position_pct=float(os.getenv("STRONG_TOTAL_POSITION_PCT", "80.0")),
             # 震荡市
-            consolidate_min_signals=int(os.getenv("CONSENSUS_MIN_SIGNALS", "5")),
-            consolidate_sell_signals=int(os.getenv("CONSENSUS_SELL_SIGNALS", "3")),
-            consolidate_stop_loss_pct=float(os.getenv("CONSENSUS_STOP_LOSS_PCT", "10.0")),
+            consolidate_min_signals=int(os.getenv("CONSENSUS_MIN_SIGNALS", "2")),
+            consolidate_sell_signals=int(os.getenv("CONSENSUS_SELL_SIGNALS", "1")),
+            consolidate_stop_loss_pct=float(os.getenv("CONSENSUS_STOP_LOSS_PCT", "6.0")),
             consolidate_take_profit_pct=float(os.getenv("CONSENSUS_TAKE_PROFIT_PCT", "15.0")),
-            consolidate_atr_multiplier=float(os.getenv("CONSENSUS_ATR_MULTIPLIER", "2.0")),
+            consolidate_atr_multiplier=float(os.getenv("CONSENSUS_ATR_MULTIPLIER", "1.5")),
             consolidate_max_hold_days=int(os.getenv("CONSENSUS_MAX_HOLD_DAYS", "10")),
             consolidate_single_position_pct=float(os.getenv("CONSENSUS_SINGLE_POSITION_PCT", "20.0")),
             consolidate_total_position_pct=float(os.getenv("CONSENSUS_TOTAL_POSITION_PCT", "60.0")),
