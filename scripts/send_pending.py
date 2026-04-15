@@ -61,7 +61,7 @@ def send_via_http(message: str, target: str) -> bool:
     try:
         import requests
         resp = requests.post(
-            "http://localhost:18789/api/message/send",
+            "http://localhost:19277/api/message/send",
             json={"channel": "feishu", "target": target, "message": message},
             timeout=5,
         )
