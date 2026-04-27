@@ -1,0 +1,19 @@
+[
+  {
+    "version": "W2",
+    "weights": {
+      "ma_bull": 1.2
+    },
+    "changes": [
+      {
+        "signal": "ma_bull",
+        "old": 1.0,
+        "new": 1.2
+      }
+    ],
+    "suggested_at": "2026-04-27T20:00:00",
+    "confirmed_at": "2026-04-27T22:32:01.450044",
+    "cycle": 1,
+    "status": "verifying"
+  }
+]

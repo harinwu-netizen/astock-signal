@@ -33,13 +33,14 @@ class MarketRegime(Enum):
 class MarketRegimeResult:
     """市场状态判断结果"""
     regime: MarketRegime
-    index_code: str
-    index_price: float
-    index_change_pct_5d: float  # 5日累计涨跌幅
-    ma5: float
-    ma10: float
-    ma20: float
-    reason: str
+    confidence: float = 0.0            # P2新增：置信度 0.0~1.0，越高越确定
+    index_code: str = ""
+    index_price: float = 0.0
+    index_change_pct_5d: float = 0.0  # 5日累计涨跌幅
+    ma5: float = 0.0
+    ma10: float = 0.0
+    ma20: float = 0.0
+    reason: str = ""
 
 
 def detect_market_regime(
@@ -72,10 +73,11 @@ def detect_market_regime(
             logger.warning("无法导入txstock，市场状态判断失败")
             return MarketRegimeResult(
                 regime=MarketRegime.CONSOLIDATE,
+                confidence=0.0,
                 index_code=index_code,
                 index_price=0,
                 index_change_pct_5d=0,
-                ma5=0, ma10=0, ma20=0,
+                ma5=0.0, ma10=0.0, ma20=0.0,
                 reason="数据源不可用，默认震荡"
             )
 
@@ -85,10 +87,11 @@ def detect_market_regime(
             logger.warning(f"K线数据不足（{hist.shape[0] if hist is not None else 0}条），默认震荡")
             return MarketRegimeResult(
                 regime=MarketRegime.CONSOLIDATE,
+                confidence=0.0,
                 index_code=index_code,
                 index_price=0,
                 index_change_pct_5d=0,
-                ma5=0, ma10=0, ma20=0,
+                ma5=0.0, ma10=0.0, ma20=0.0,
                 reason=f"K线不足{days}条，默认震荡"
             )
 
@@ -128,10 +131,35 @@ def detect_market_regime(
                 f"均线{'多头' if ma_bull else '空头' if ma_bear else '纠缠'}，方向不明"
             )
 
-        logger.info(f"市场状态判断 [{index_code}]: {reason}")
+        # ===== P2新增：置信度计算 =====
+        ma_spread = abs(ma5 - ma10) / ma10 * 100 if ma10 > 0 else 0  # 均线间距百分比
+        trend_strength = abs(ma5 - ma20) / ma20 * 100 if ma20 > 0 else 0  # 趋势强度
+
+        if regime == MarketRegime.STRONG:
+            confidence = min(trend_strength / 5.0, 1.0)  # 间距5%以上=高置信
+        elif regime == MarketRegime.WEAK:
+            confidence = min(trend_strength / 5.0, 1.0)
+        else:
+            # 震荡市：均线间距越小越确定（纠缠=真的震荡）
+            # 间距<1%=高置信，>3%=置信度低，可能要变盘
+            confidence = max(0.0, 1.0 - (ma_spread / 3.0))
+
+        # ===== P2新增：低置信震荡市降级为弱市（保守）=====
+        original_regime = regime
+        if regime == MarketRegime.CONSOLIDATE and confidence < 0.4:
+            regime = MarketRegime.WEAK
+            reason = (
+                f"震荡→弱市降级：置信度{confidence:.2f}<0.4，"
+                f"均线间距过大({ma_spread:.2f}%)，趋势不明，保守处理。"
+                f"原始判断：{reason}"
+            )
+            confidence = 0.4  # 不降低到0，维持基础置信
+
+        logger.info(f"市场状态判断 [{index_code}]: {reason} (置信度={confidence:.2f})")
 
         return MarketRegimeResult(
             regime=regime,
+            confidence=confidence,
             index_code=index_code,
             index_price=latest_close,
             index_change_pct_5d=change_pct_5d,
@@ -145,10 +173,11 @@ def detect_market_regime(
         logger.error(f"市场状态判断异常: {e}")
         return MarketRegimeResult(
             regime=MarketRegime.CONSOLIDATE,
+            confidence=0.0,
             index_code=index_code,
             index_price=0,
             index_change_pct_5d=0,
-            ma5=0, ma10=0, ma20=0,
+            ma5=0.0, ma10=0.0, ma20=0.0,
             reason=f"判断异常: {e}，默认震荡"
         )
 

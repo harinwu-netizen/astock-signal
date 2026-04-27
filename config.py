@@ -95,6 +95,16 @@ class Config:
     max_total_position_pct: float = 80.0   # 总仓位上限（%）
     max_trades_per_day: int = 1             # 每日最大交易次数
 
+    # ===== 仓位分档（信号强度决定仓位）=====
+    # 弱信号(1个买入信号) → 试仓
+    position_tier1_pct: float = 10.0
+    # 标准信号(2个买入信号) → 标准仓
+    position_tier2_pct: float = 20.0
+    # 强信号(3个+买入信号) → 重仓
+    position_tier3_pct: float = 30.0
+    # 胜率权重（用于多股候选排序）
+    win_rate_weight: float = 0.6
+
     # ===== 监控设置 =====
     watch_interval: int = 300            # watch扫描间隔（秒）
     watch_enabled: bool = True           # 是否启用监控
@@ -203,6 +213,10 @@ class Config:
             max_single_position_pct=float(os.getenv("MAX_SINGLE_POSITION_PCT", "30.0")),
             max_total_position_pct=float(os.getenv("MAX_TOTAL_POSITION_PCT", "80.0")),
             max_trades_per_day=int(os.getenv("MAX_TRADES_PER_DAY", "1")),
+            position_tier1_pct=float(os.getenv("POSITION_TIER1_PCT", "10.0")),
+            position_tier2_pct=float(os.getenv("POSITION_TIER2_PCT", "20.0")),
+            position_tier3_pct=float(os.getenv("POSITION_TIER3_PCT", "30.0")),
+            win_rate_weight=float(os.getenv("WIN_RATE_WEIGHT", "0.6")),
             # 监控
             watch_interval=int(os.getenv("WATCH_INTERVAL", "300")),
             watch_enabled=os.getenv("WATCH_ENABLED", "true").lower() == "true",

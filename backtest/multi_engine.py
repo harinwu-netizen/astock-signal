@@ -104,6 +104,9 @@ class MultiStockBacktestEngine:
 
     def __init__(self, codes: List[str], initial_capital: float = 100000.0):
         self.codes = codes
+        # 追踪每只股票的历史胜率（用于候选排序）
+        self.stock_win_rate: Dict[str, float] = {code: 0.5 for code in codes}
+        self.stock_trade_count: Dict[str, int] = {code: 0 for code in codes}
         self.initial_capital = initial_capital
         self.counter = SignalCounter()
         self.selector = get_selector()
@@ -259,7 +262,7 @@ class MultiStockBacktestEngine:
                 bp = pos.buy_price if pos else 0.0
                 try:
                     signals[code] = self.counter.count_signals(
-                        window, rt, market_status=market_status, buy_price=bp
+                        window, rt, market_status=market_status, buy_price=bp, skip_money_flow=True
                     )
                 except Exception:
                     continue
@@ -360,10 +363,20 @@ class MultiStockBacktestEngine:
                     else:
                         loss_streak[pos.code] = 0
 
+                    # 更新个股历史胜率
+                    self.stock_trade_count[pos.code] = self.stock_trade_count.get(pos.code, 0) + 1
+                    wins = sum(
+                        1 for t in trades
+                        if t["code"] == pos.code and t["action"] != "BUY" and t["pnl"] > 0
+                    )
+                    total = self.stock_trade_count[pos.code]
+                    self.stock_win_rate[pos.code] = wins / total if total > 0 else 0.5
+
             # ============================================================== #
-            #  买入检查
+            #  买入检查（信号强度排序，等权建仓）
             # ============================================================== #
-            if len(positions) < 3:
+            remaining_slots = self.cfg.max_positions - len(positions)
+            if remaining_slots > 0:
                 candidates = []
                 for code, sig in signals.items():
                     if any(p.code == code for p in positions):
@@ -385,97 +398,113 @@ class MultiStockBacktestEngine:
                                 continue
 
                     candidates.append((code, sig))
-
                 if candidates:
-                    # 按 position_ratio 降序，每次只买最强的1只
-                    candidates.sort(key=lambda x: x[1].position_ratio, reverse=True)
-                    code, sig = candidates[0]
+                    # ---- 2c. 综合打分：0.6×历史胜率 + 0.4×信号强度 ----
+                    # 信号强度归一化：用候选里最大信号数作分母
+                    max_signals = max(
+                        len(sig.buy_signals_detail) if hasattr(sig, "buy_signals_detail") else sig.rebound_count + sig.trend_count
+                        for _, sig in candidates
+                    ) or 1
+                    for code, sig in candidates:
+                        n_signals = len(sig.buy_signals_detail) if hasattr(sig, "buy_signals_detail") else sig.rebound_count + sig.trend_count
+                        signal_score = n_signals / max_signals
+                        wr = self.stock_win_rate.get(code, 0.5)
+                        code_wr = getattr(sig, "win_rate", None)
+                        if code_wr is not None:
+                            wr = code_wr
+                        sig.score = self.cfg.win_rate_weight * wr + (1 - self.cfg.win_rate_weight) * signal_score
 
-                    close = closes[code]
-                    vol = volumes[code]
-                    params = self._get_regime_params(market_status)
-                    pos_ratio = min(sig.position_ratio, params["pos_pct"])
-                    pos_ratio = max(pos_ratio, 0.05)
+                    candidates.sort(key=lambda x: getattr(x[1], "score", 0), reverse=True)
 
-                    max_amt = cash * pos_ratio
-                    qty = max(1, int(max_amt / (close * 100)))
-                    _, qty, _ = check_volume_limit(qty, vol)
-                    if qty < 1:
-                        equity_curve.append({
+                    n_slots = remaining_slots
+                    bought_today = []
+
+                    for code, sig in candidates[:n_slots]:
+                        close = closes[code]
+                        vol = volumes[code]
+                        params = self._get_regime_params(market_status)
+
+                        # ---- 仓位分档：按信号数量决定仓位档次 ----
+                        n_signals = len(sig.buy_signals_detail) if hasattr(sig, "buy_signals_detail") else sig.rebound_count + sig.trend_count
+                        if n_signals >= 3:
+                            pos_ratio = self.cfg.position_tier3_pct / 100
+                            tier_str = "重仓(30%)"
+                        elif n_signals == 2:
+                            pos_ratio = self.cfg.position_tier2_pct / 100
+                            tier_str = "标准(20%)"
+                        else:
+                            pos_ratio = self.cfg.position_tier1_pct / 100
+                            tier_str = "试仓(10%)"
+
+                        # 单只仓位上限保护
+                        pos_ratio = min(pos_ratio, self.cfg.max_single_position_pct / 100)
+                        max_amt = cash * pos_ratio
+                        qty = max(1, int(max_amt / (close * 100)))
+                        _, qty, _ = check_volume_limit(qty, vol)
+                        if qty < 1:
+                            continue
+
+                        buy_price = calc_real_buy_price(close)
+                        gross = buy_price * qty * 100
+                        cost = calculate_buy_cost(gross)
+                        if cost["total_cost"] > cash:
+                            continue
+
+                        trade_seq += 1
+                        wr = self.stock_win_rate.get(code, 0.5)
+                        reason_str = (
+                            f"买入[{market_status.value}][{tier_str}] "
+                            f"信号{n_signals}个 胜率{wr:.0%} 得分{sig.score:.2f}"
+                        )
+                        if (market_status == MarketStatus.WEAK
+                                and loss_streak.get(code, 0) >= self.cfg.weak_consecutive_loss_count):
+                            reason_str += f"【连续{loss_streak[code]}亏强化】"
+
+                        trades.append({
+                            "seq": trade_seq,
                             "date": date,
-                            "capital": cash + sum(
-                                p.market_value(closes.get(p.code, p.buy_price))
-                                for p in positions
-                            ),
+                            "action": "BUY",
+                            "code": code,
+                            "name": stock_names[code],
+                            "buy_date": date,
+                            "buy_price": buy_price,
+                            "sell_date": "",
+                            "sell_price": 0.0,
+                            "quantity": qty,
+                            "pnl": 0.0,
+                            "hold_days": 0,
+                            "reason": reason_str,
+                            "regime": market_status.value,
+                            "rebound": sig.rebound_count,
+                            "trend": sig.trend_count,
                         })
-                        continue
 
-                    buy_price = calc_real_buy_price(close)
-                    gross = buy_price * qty * 100
-                    cost = calculate_buy_cost(gross)
-                    if cost["total_cost"] > cash:
-                        equity_curve.append({
-                            "date": date,
-                            "capital": cash + sum(
-                                p.market_value(closes.get(p.code, p.buy_price))
-                                for p in positions
-                            ),
-                        })
-                        continue
+                        cash -= cost["total_cost"]
 
-                    trade_seq += 1
-                    reason_str = (
-                        f"买入[{market_status.value}] "
-                        f"反弹{int(sig.rebound_count)}/趋势{int(sig.trend_count)}/经典{int(sig.buy_count)}"
-                    )
-                    if (market_status == MarketStatus.WEAK
-                            and loss_streak.get(code, 0) >= self.cfg.weak_consecutive_loss_count):
-                        reason_str += f"【连续{loss_streak[code]}亏强化】"
+                        # ATR
+                        idx = avail[code]
+                        atr_win = stock_hists[code][max(0, idx - 14):idx + 1]
+                        atr = self._calc_atr(atr_win)
+                        ma20_tp = sig.ma20 if market_status == MarketStatus.WEAK else 0.0
+                        bb_upper = sig.bb_upper if market_status == MarketStatus.CONSOLIDATE else 0.0
 
-                    trades.append({
-                        "seq": trade_seq,
-                        "date": date,
-                        "action": "BUY",
-                        "code": code,
-                        "name": stock_names[code],
-                        "buy_date": date,
-                        "buy_price": buy_price,
-                        "sell_date": "",
-                        "sell_price": 0.0,
-                        "quantity": qty,
-                        "pnl": 0.0,
-                        "hold_days": 0,
-                        "reason": reason_str,
-                        "regime": market_status.value,
-                        "rebound": sig.rebound_count,
-                        "trend": sig.trend_count,
-                    })
-
-                    cash -= cost["total_cost"]
-
-                    # ATR
-                    idx = avail[code]
-                    atr_win = stock_hists[code][max(0, idx - 14):idx + 1]
-                    atr = self._calc_atr(atr_win)
-                    ma20_tp = sig.ma20 if market_status == MarketStatus.WEAK else 0.0
-                    bb_upper = sig.bb_upper if market_status == MarketStatus.CONSOLIDATE else 0.0
-
-                    pos = MultiPosition.create(
-                        code=code, name=stock_names[code],
-                        buy_date=date, buy_price=buy_price,
-                        qty=qty, cost=cost["total_cost"],
-                        atr=atr,
-                        atr_mult=params["atr_mult"],
-                        sl_pct=params["stop_loss_pct"],
-                        tp_pct=params["take_profit_pct"],
-                        max_hold=params["max_hold"],
-                        regime=market_status,
-                        rebound=sig.rebound_count,
-                        trend=sig.trend_count,
-                        ma20_tp=ma20_tp,
-                        bb_upper=bb_upper,
-                    )
-                    positions.append(pos)
+                        pos = MultiPosition.create(
+                            code=code, name=stock_names[code],
+                            buy_date=date, buy_price=buy_price,
+                            qty=qty, cost=cost["total_cost"],
+                            atr=atr,
+                            atr_mult=params["atr_mult"],
+                            sl_pct=params["stop_loss_pct"],
+                            tp_pct=params["take_profit_pct"],
+                            max_hold=params["max_hold"],
+                            regime=market_status,
+                            rebound=sig.rebound_count,
+                            trend=sig.trend_count,
+                            ma20_tp=ma20_tp,
+                            bb_upper=bb_upper,
+                        )
+                        positions.append(pos)
+                        bought_today.append(code)
 
             # ---- 净值记录 ----
             total = cash + sum(

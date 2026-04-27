@@ -20,6 +20,7 @@ from models.signal import MarketStatus, Decision as EnumDecision
 from indicators.signal_weak import analyze_weak, WeakSignal
 from indicators.signal_strong import analyze_strong, StrongSignal
 from indicators.signal_consolidate import analyze_consolidate, ConsolidateSignal
+from data_provider.money_flow import get_money_flow, MoneyFlowData
 
 
 @dataclass
@@ -55,6 +56,9 @@ class UnifiedSignal:
     ma5: float = 0.0
     ma10: float = 0.0
     ma20: float = 0.0
+
+    # 资金流数据（可选，失败时为 None）
+    money_flow: Optional[MoneyFlowData] = None
 
     @property
     def decision(self) -> EnumDecision:
@@ -172,6 +176,7 @@ def analyze_unified(
     realtime: dict,
     market_status: MarketStatus = MarketStatus.CONSOLIDATE,
     buy_price: float = 0.0,
+    skip_money_flow: bool = False,
 ) -> UnifiedSignal:
     """
     统一信号分析入口
@@ -236,6 +241,15 @@ def analyze_unified(
         sell_detail = cons_sig.sell_signals
         position_ratio = cons_sig.position_ratio
 
+    # ===== 资金流检查 =====
+    mf_data = None
+    mf_fetch_failed = False  # P1新增：标记获取是否失败
+    if not skip_money_flow:
+        try:
+            mf_data = get_money_flow(code, name)
+        except Exception:
+            mf_fetch_failed = True  # P1：获取失败时标记，后续按保守策略处理
+
     # ===== 跨系统否决机制（仅针对非本市场状态的信号）=====
     # 原则：弱市系统不否决强市，强市系统不否决弱市，只有震荡市的信号才对其他市场有参考价值
     # 震荡市出卖出信号 → 可否决弱市买入（弱势不该买震荡高位的票）
@@ -290,6 +304,23 @@ def analyze_unified(
         decision = "WATCH"
         reason = f"信号不足[{primary.buy_count}/2]"
 
+    # ===== 资金流否决机制（P1优化：失败=默认保守）=====
+    if mf_fetch_failed:
+        # P1：资金流获取失败，默认保守处理，不冒进
+        if decision == "BUY":
+            decision = "WATCH"
+            reason = f"【资金流获取失败，默认否决】{reason}"
+        elif decision in ("HOLD", "TAKE_PROFIT"):
+            # 持仓中断言风险保留，但追加警告
+            reason = f"{reason} ⚠️资金流数据获取失败"
+    elif mf_data is not None:
+        # 资金流获取成功时：按原逻辑否决
+        if decision == "BUY" and mf_data.main_net < 0:
+            decision = "WATCH"
+            reason = f"【资金否决】{mf_data.veto_reason()}"
+        elif decision == "SELL" and mf_data.main_net < 0:
+            reason = f"{reason} + {mf_data.veto_reason()}"
+
     return UnifiedSignal(
         code=code,
         name=name,
@@ -312,6 +343,7 @@ def analyze_unified(
         ma5=strong_sig.ma5 if strong_sig else 0.0,
         ma10=strong_sig.ma10 if strong_sig else 0.0,
         ma20=cons_sig.bb_middle if cons_sig else 0.0,
+        money_flow=mf_data,
     )
 
 
@@ -324,11 +356,11 @@ class SignalCounter:
     兼容层：对内调用 analyze_unified，对外保持旧接口
     """
 
-    def count_signals(self, history, realtime, market_status=None, buy_price=0):
+    def count_signals(self, history, realtime, market_status=None, buy_price=0, skip_money_flow=False):
         """旧接口，直接透传给 analyze_unified"""
         if market_status is None:
             market_status = MarketStatus.CONSOLIDATE
-        return analyze_unified(history, realtime, market_status, buy_price)
+        return analyze_unified(history, realtime, market_status, buy_price, skip_money_flow)
 
     def _make_decision(self, signal, buy_price):
         """兼容：直接返回 primary_decision"""

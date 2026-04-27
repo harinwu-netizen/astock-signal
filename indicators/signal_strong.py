@@ -4,10 +4,12 @@
 
 目标：跟住大趋势，不轻易下车，吃完整波行情
 
-核心指标（3选2买）：
-  1. MA5 > MA10 > MA20（均线多头）
-  2. DIF > 0 且 MACD柱放大（动能增强）
-  3. 量价齐升（量比 > 1.3 且价格上涨）
+核心指标（3选2买，v5.7起改为加权得分）：
+  1. MA5 > MA10 > MA20（均线多头）     权重 0.5
+  2. DIF > 0 且 MACD柱放大（动能增强）   权重 0.4
+  3. 量价齐升（量比 > 1.3 且价格上涨）  权重 0.4
+
+买入阈值：加权得分 >= 0.6
 
 持有：
   - 价格不破MA10/MA20
@@ -21,9 +23,24 @@
   - 收盘跌破MA20
 """
 
+# ===== P3新增：信号权重字典 =====
+STRONG_BUY_WEIGHTS = {
+    "均线多头排列": 0.5,    # 趋势基准，最稳定
+    "MACD扩散":     0.4,    # 动量信号
+    "量价齐升":      0.4,    # 趋势确认
+}
+
+STRONG_BUY_THRESHOLD = 0.6   # P3：加权得分 >= 0.6 才买入（强市需更强确认）
+
+
+def calc_weighted_score(triggered: list, weights: dict) -> float:
+    """P3新增：计算加权得分"""
+    return sum(weights.get(sig, 0.0) for sig in triggered)
+
 from dataclasses import dataclass, field
 from typing import List
 from indicators.macd import calc_macd
+from indicators.rsi import calc_rsi
 
 
 @dataclass
@@ -104,6 +121,10 @@ def analyze_strong(
     if len(closes) >= 2:
         result.price_change_pct = (closes[-1] - closes[-2]) / closes[-2] * 100
 
+    # ===== RSI(14) 趋势确认（v5.9新增，强市不应买在RSI>70超买区）=====
+    rsi_14 = calc_rsi(closes, 14)
+    rsi_confirmed = rsi_14 < 70  # RSI>70时是超买，不追
+
     # ===== 计算3个买入指标 =====
     buy_triggered = []
 
@@ -112,15 +133,19 @@ def analyze_strong(
         buy_triggered.append("均线多头排列")
         result.buy_signals.append(f"MA5={result.ma5:.2f}>MA10={result.ma10:.2f}>MA20={result.ma20:.2f}")
 
-    # 指标2: MACD扩散（DIF>0 且 MACD柱比前一日放大）
-    if dif > 0 and macd_bar > prev_bar:
+    # 指标2: MACD扩散（DIF>0 且 MACD柱比前一日放大，且RSI未超买）
+    if dif > 0 and macd_bar > prev_bar and rsi_confirmed:
         buy_triggered.append("MACD扩散")
-        result.buy_signals.append(f"DIF={dif:.4f}>0 且柱状体放大({macd_bar:.4f}>{prev_bar:.4f})")
+        result.buy_signals.append(f"DIF={dif:.4f}>0 且柱放大({macd_bar:.4f}>{prev_bar:.4f}) RSI14={rsi_14:.1f}<70")
+    elif dif > 0 and macd_bar > prev_bar and not rsi_confirmed:
+        # RSI超买，但仍满足MACD条件，降权标记
+        buy_triggered.append("MACD扩散(RSI偏贵)")
+        result.buy_signals.append(f"DIF={dif:.4f}>0 MACD扩散但RSI14={rsi_14:.1f}>70超买")
 
-    # 指标3: 量价齐升
-    if result.volume_ratio > 1.3 and result.price_change_pct > 0:
+    # 指标3: 量价齐升（v5.9提高量比要求至1.5，避免普通量级误判）
+    if result.volume_ratio > 1.5 and result.price_change_pct > 0:
         buy_triggered.append("量价齐升")
-        result.buy_signals.append(f"量比={result.volume_ratio:.2f}>1.3 且上涨{result.price_change_pct:.2f}%")
+        result.buy_signals.append(f"量比={result.volume_ratio:.2f}>1.5 上涨{result.price_change_pct:.2f}%")
 
     result.buy_count = len(buy_triggered)
 
@@ -154,19 +179,16 @@ def analyze_strong(
             result.sell_signals.append(f"亏损{loss_pct:.1f}%超限")
             return result
 
-    # ===== 决策 =====
+    # ===== P3替换：加权得分买入决策 =====
+    def calc_ws(triggered): return sum(STRONG_BUY_WEIGHTS.get(s, 0.0) for s in triggered)
+    ws = calc_ws(buy_triggered)
     if buy_price == 0:
-        # 无持仓 → 买入判断
-        if len(buy_triggered) >= 2:
+        if ws >= STRONG_BUY_THRESHOLD:
             result.decision = "BUY"
-            if len(buy_triggered) == 3:
-                result.position_ratio = 1.0
-            else:
-                result.position_ratio = 0.5
+            result.position_ratio = min(ws / 1.2, 1.0)  # 归一化
         else:
             result.decision = "WATCH"
     else:
-        # 持仓中 → 持有
         if result.sell_count >= 1:
             result.decision = "SELL"
         else:

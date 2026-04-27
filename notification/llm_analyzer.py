@@ -296,6 +296,42 @@ class LLMAnalyzer:
         """列出所有支持的Provider"""
         return {k: v["name"] for k, v in PROVIDER_CONFIG.items()}
 
+    def analyze_text(self, prompt: str, system_role: str = None) -> Optional[str]:
+        """
+        通用文本分析（供进化系统AI初审/复审使用）
+
+        Args:
+            prompt: 用户输入的提示
+            system_role: 系统角色提示（可选）
+
+        Returns:
+            AI响应文本
+        """
+        if not self.is_available:
+            logger.debug("LLM未启用，跳过文本分析")
+            return None
+
+        client = self._get_client()
+        if not client:
+            return None
+
+        system_msg = system_role or "你是一个专业、客观的A股量化交易系统AI审核员。简洁专业，不构成投资建议。"
+
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"[LLM] analyze_text失败: {e}")
+            return None
+
 
 # 全局实例
 _llm_analyzer: LLMAnalyzer = None

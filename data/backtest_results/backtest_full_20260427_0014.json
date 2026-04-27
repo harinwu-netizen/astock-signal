@@ -1,0 +1,467 @@
+{
+  "generated_at": "2026-04-27 00:14:14",
+  "version": "v5.7",
+  "pool": [
+    {
+      "code": "000651",
+      "name": "格力电器",
+      "market_cap": "大盘",
+      "sector": "制造"
+    },
+    {
+      "code": "600519",
+      "name": "贵州茅台",
+      "market_cap": "大盘",
+      "sector": "消费"
+    },
+    {
+      "code": "600036",
+      "name": "招商银行",
+      "market_cap": "大盘",
+      "sector": "金融"
+    },
+    {
+      "code": "002594",
+      "name": "比亚迪",
+      "market_cap": "大盘",
+      "sector": "制造"
+    },
+    {
+      "code": "300760",
+      "name": "迈瑞医疗",
+      "market_cap": "大盘",
+      "sector": "医药"
+    },
+    {
+      "code": "000333",
+      "name": "美的集团",
+      "market_cap": "大盘",
+      "sector": "制造"
+    },
+    {
+      "code": "688041",
+      "name": "海光信息",
+      "market_cap": "中盘",
+      "sector": "科技"
+    },
+    {
+      "code": "002230",
+      "name": "科大讯飞",
+      "market_cap": "中盘",
+      "sector": "科技"
+    },
+    {
+      "code": "300999",
+      "name": "金龙鱼",
+      "market_cap": "中盘",
+      "sector": "消费"
+    },
+    {
+      "code": "002049",
+      "name": "紫光国微",
+      "market_cap": "中盘",
+      "sector": "科技"
+    },
+    {
+      "code": "000629",
+      "name": "钒钛股份",
+      "market_cap": "小盘",
+      "sector": "周期"
+    },
+    {
+      "code": "601899",
+      "name": "紫金矿业",
+      "market_cap": "大盘",
+      "sector": "周期"
+    },
+    {
+      "code": "600583",
+      "name": "海油工程",
+      "market_cap": "中盘",
+      "sector": "周期"
+    },
+    {
+      "code": "603683",
+      "name": "晶华新材",
+      "market_cap": "小盘",
+      "sector": "化工"
+    },
+    {
+      "code": "002997",
+      "name": "瑞鹄模具",
+      "market_cap": "小盘",
+      "sector": "制造"
+    },
+    {
+      "code": "002801",
+      "name": "微光股份",
+      "market_cap": "小盘",
+      "sector": "制造"
+    },
+    {
+      "code": "603396",
+      "name": "皇马科技",
+      "market_cap": "小盘",
+      "sector": "化工"
+    },
+    {
+      "code": "600745",
+      "name": "闻泰科技",
+      "market_cap": "中盘",
+      "sector": "科技"
+    },
+    {
+      "code": "002236",
+      "name": "大华股份",
+      "market_cap": "中盘",
+      "sector": "科技"
+    },
+    {
+      "code": "601012",
+      "name": "隆基绿能",
+      "market_cap": "大盘",
+      "sector": "制造"
+    }
+  ],
+  "periods": {
+    "近期6月": {
+      "period": "近期6月",
+      "start": "2025-10-01",
+      "end": "2026-04-01",
+      "days": 183,
+      "desc": "最近半年，覆盖国庆后反弹+春节+两会",
+      "summary": {
+        "avg_return": -0.1,
+        "avg_annual_return": -0.26,
+        "avg_max_drawdown": 2.13,
+        "avg_win_rate": 36.6,
+        "avg_profit_loss_ratio": 1.43,
+        "total_trades": 90,
+        "total_wins": 41,
+        "total_loses": 49,
+        "avg_sharpe": -1.02,
+        "num_stocks": 20
+      },
+      "regimes": {
+        "强市": {
+          "name": "强市",
+          "total_trades": 13,
+          "winning_trades": 5,
+          "losing_trades": 8,
+          "win_rate": 38.5,
+          "total_pnl": 115911.64,
+          "avg_win": 60441.25,
+          "avg_loss": 23286.82,
+          "profit_loss_ratio": 2.6,
+          "avg_hold_days": 20.2
+        },
+        "震荡": {
+          "name": "震荡",
+          "total_trades": 20,
+          "winning_trades": 5,
+          "losing_trades": 15,
+          "win_rate": 25.0,
+          "total_pnl": -116804.62,
+          "avg_win": 4129.09,
+          "avg_loss": 9163.34,
+          "profit_loss_ratio": 0.45,
+          "avg_hold_days": 8.9
+        },
+        "弱市": {
+          "name": "弱市",
+          "total_trades": 57,
+          "winning_trades": 31,
+          "losing_trades": 26,
+          "win_rate": 54.4,
+          "total_pnl": -18616.63,
+          "avg_win": 2433.34,
+          "avg_loss": 3617.32,
+          "profit_loss_ratio": 0.67,
+          "avg_hold_days": 6.4
+        }
+      },
+      "stocks": [
+        {
+          "code": "000651",
+          "name": "000651",
+          "total_return": -0.57,
+          "annual_return": -1.21,
+          "win_rate": 0.0,
+          "profit_loss_ratio": 0.0,
+          "max_drawdown": 0.57,
+          "total_trades": 2,
+          "winning_trades": 0,
+          "losing_trades": 2,
+          "avg_hold_days": 5.0,
+          "sharpe_ratio": -2.65
+        },
+        {
+          "code": "600519",
+          "name": "600519",
+          "total_return": -1.27,
+          "annual_return": -2.71,
+          "win_rate": 0.0,
+          "profit_loss_ratio": 0.0,
+          "max_drawdown": 1.27,
+          "total_trades": 2,
+          "winning_trades": 0,
+          "losing_trades": 2,
+          "avg_hold_days": 7.5,
+          "sharpe_ratio": -2.99
+        },
+        {
+          "code": "600036",
+          "name": "600036",
+          "total_return": -0.69,
+          "annual_return": -1.47,
+          "win_rate": 75.0,
+          "profit_loss_ratio": 0.1,
+          "max_drawdown": 1.58,
+          "total_trades": 4,
+          "winning_trades": 3,
+          "losing_trades": 1,
+          "avg_hold_days": 11.0,
+          "sharpe_ratio": -0.65
+        },
+        {
+          "code": "002594",
+          "name": "002594",
+          "total_return": 1.42,
+          "annual_return": 3.03,
+          "win_rate": 80.0,
+          "profit_loss_ratio": 0.91,
+          "max_drawdown": 0.76,
+          "total_trades": 5,
+          "winning_trades": 4,
+          "losing_trades": 1,
+          "avg_hold_days": 9.0,
+          "sharpe_ratio": 1.05
+        },
+        {
+          "code": "300760",
+          "name": "300760",
+          "total_return": -1.16,
+          "annual_return": -2.48,
+          "win_rate": 42.9,
+          "profit_loss_ratio": 0.38,
+          "max_drawdown": 1.28,
+          "total_trades": 7,
+          "winning_trades": 3,
+          "losing_trades": 4,
+          "avg_hold_days": 6.7,
+          "sharpe_ratio": -1.94
+        },
+        {
+          "code": "000333",
+          "name": "000333",
+          "total_return": 0.7,
+          "annual_return": 1.5,
+          "win_rate": 40.0,
+          "profit_loss_ratio": 2.36,
+          "max_drawdown": 1.14,
+          "total_trades": 5,
+          "winning_trades": 2,
+          "losing_trades": 3,
+          "avg_hold_days": 11.2,
+          "sharpe_ratio": 0.63
+        },
+        {
+          "code": "688041",
+          "name": "688041",
+          "total_return": 2.42,
+          "annual_return": 5.18,
+          "win_rate": 28.6,
+          "profit_loss_ratio": 3.51,
+          "max_drawdown": 3.59,
+          "total_trades": 7,
+          "winning_trades": 2,
+          "losing_trades": 5,
+          "avg_hold_days": 8.7,
+          "sharpe_ratio": 0.59
+        },
+        {
+          "code": "002230",
+          "name": "002230",
+          "total_return": -1.21,
+          "annual_return": -2.58,
+          "win_rate": 66.7,
+          "profit_loss_ratio": 0.15,
+          "max_drawdown": 1.33,
+          "total_trades": 6,
+          "winning_trades": 4,
+          "losing_trades": 2,
+          "avg_hold_days": 10.8,
+          "sharpe_ratio": -1.25
+        },
+        {
+          "code": "300999",
+          "name": "300999",
+          "total_return": -0.3,
+          "annual_return": -0.64,
+          "win_rate": 66.7,
+          "profit_loss_ratio": 0.05,
+          "max_drawdown": 0.64,
+          "total_trades": 3,
+          "winning_trades": 2,
+          "losing_trades": 1,
+          "avg_hold_days": 9.3,
+          "sharpe_ratio": -0.66
+        },
+        {
+          "code": "002049",
+          "name": "002049",
+          "total_return": -3.79,
+          "annual_return": -8.86,
+          "win_rate": 0.0,
+          "profit_loss_ratio": 0.0,
+          "max_drawdown": 3.84,
+          "total_trades": 2,
+          "winning_trades": 0,
+          "losing_trades": 2,
+          "avg_hold_days": 8.0,
+          "sharpe_ratio": -2.97
+        },
+        {
+          "code": "000629",
+          "name": "000629",
+          "total_return": -0.16,
+          "annual_return": -0.34,
+          "win_rate": 50.0,
+          "profit_loss_ratio": 0.89,
+          "max_drawdown": 3.75,
+          "total_trades": 6,
+          "winning_trades": 3,
+          "losing_trades": 3,
+          "avg_hold_days": 9.2,
+          "sharpe_ratio": -0.02
+        },
+        {
+          "code": "601899",
+          "name": "601899",
+          "total_return": -3.68,
+          "annual_return": -7.87,
+          "win_rate": 25.0,
+          "profit_loss_ratio": 0.39,
+          "max_drawdown": 3.7,
+          "total_trades": 4,
+          "winning_trades": 1,
+          "losing_trades": 3,
+          "avg_hold_days": 13.2,
+          "sharpe_ratio": -1.6
+        },
+        {
+          "code": "600583",
+          "name": "600583",
+          "total_return": -0.26,
+          "annual_return": -0.56,
+          "win_rate": 80.0,
+          "profit_loss_ratio": 0.15,
+          "max_drawdown": 0.72,
+          "total_trades": 5,
+          "winning_trades": 4,
+          "losing_trades": 1,
+          "avg_hold_days": 8.8,
+          "sharpe_ratio": -0.43
+        },
+        {
+          "code": "603683",
+          "name": "603683",
+          "total_return": -1.75,
+          "annual_return": -3.75,
+          "win_rate": 0.0,
+          "profit_loss_ratio": 0.0,
+          "max_drawdown": 1.78,
+          "total_trades": 2,
+          "winning_trades": 0,
+          "losing_trades": 2,
+          "avg_hold_days": 6.0,
+          "sharpe_ratio": -2.23
+        },
+        {
+          "code": "002997",
+          "name": "002997",
+          "total_return": -0.53,
+          "annual_return": -1.13,
+          "win_rate": 50.0,
+          "profit_loss_ratio": 0.47,
+          "max_drawdown": 0.95,
+          "total_trades": 6,
+          "winning_trades": 3,
+          "losing_trades": 3,
+          "avg_hold_days": 7.0,
+          "sharpe_ratio": -0.95
+        },
+        {
+          "code": "002801",
+          "name": "002801",
+          "total_return": 1.31,
+          "annual_return": 2.8,
+          "win_rate": 55.6,
+          "profit_loss_ratio": 1.23,
+          "max_drawdown": 1.23,
+          "total_trades": 9,
+          "winning_trades": 5,
+          "losing_trades": 4,
+          "avg_hold_days": 9.7,
+          "sharpe_ratio": 0.92
+        },
+        {
+          "code": "603396",
+          "name": "603396",
+          "total_return": 19.28,
+          "annual_return": 41.2,
+          "win_rate": 71.4,
+          "profit_loss_ratio": 18.02,
+          "max_drawdown": 2.1,
+          "total_trades": 7,
+          "winning_trades": 5,
+          "losing_trades": 2,
+          "avg_hold_days": 9.4,
+          "sharpe_ratio": 3.43
+        },
+        {
+          "code": "600745",
+          "name": "600745",
+          "total_return": -5.9,
+          "annual_return": -12.82,
+          "win_rate": 0.0,
+          "profit_loss_ratio": 0.0,
+          "max_drawdown": 5.9,
+          "total_trades": 3,
+          "winning_trades": 0,
+          "losing_trades": 3,
+          "avg_hold_days": 4.7,
+          "sharpe_ratio": -2.67
+        },
+        {
+          "code": "002236",
+          "name": "002236",
+          "total_return": -3.45,
+          "annual_return": -7.36,
+          "win_rate": 0.0,
+          "profit_loss_ratio": 0.0,
+          "max_drawdown": 3.45,
+          "total_trades": 2,
+          "winning_trades": 0,
+          "losing_trades": 2,
+          "avg_hold_days": 9.5,
+          "sharpe_ratio": -3.44
+        },
+        {
+          "code": "601012",
+          "name": "601012",
+          "total_return": -2.36,
+          "annual_return": -5.04,
+          "win_rate": 0.0,
+          "profit_loss_ratio": 0.0,
+          "max_drawdown": 3.05,
+          "total_trades": 3,
+          "winning_trades": 0,
+          "losing_trades": 3,
+          "avg_hold_days": 9.0,
+          "sharpe_ratio": -2.49
+        }
+      ]
+    }
+  }
+}

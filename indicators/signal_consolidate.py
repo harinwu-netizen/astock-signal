@@ -4,10 +4,12 @@
 
 目标：低买高卖，区间上下沿操作，不追涨杀跌
 
-核心指标（3选2买）：
-  1. RSI(14) 在 35~55 区间（适中回调）
-  2. 价格回踩布林中轨（MA20）或布林下轨
-  3. 缩量整固（量比 < 0.8）
+核心指标（3选2买，v5.7起改为加权得分）：
+  1. RSI(14) 在 35~55 区间低位拐头     权重 0.5
+  2. 价格回踩布林下轨                   权重 0.4
+  3. 缩量整固（量比 < 0.7）             权重 0.3
+
+买入阈值：加权得分 >= 0.5
 
 卖出：
   - 价格触及布林上轨
@@ -18,6 +20,21 @@
 
 注：震荡市不抄底（RSI<30是弱势思维），不追高（RSI>55是强势思维）
 """
+
+# ===== P3新增：信号权重字典 =====
+CONS_BUY_WEIGHTS = {
+    "RSI低位整固":  0.5,    # 真正有意义的底部信号
+    "RSI偏低":      0.2,    # 单独偏低意义弱
+    "回踩布林下轨": 0.4,    # 支撑确认
+    "缩量整固":     0.3,    # 配合信号
+}
+
+CONS_BUY_THRESHOLD = 0.5    # P3：加权得分 >= 0.5 才买入
+
+
+def calc_weighted_score(triggered: list, weights: dict) -> float:
+    """P3新增：计算加权得分"""
+    return sum(weights.get(sig, 0.0) for sig in triggered)
 
 from dataclasses import dataclass, field
 from typing import List
@@ -56,6 +73,19 @@ def calc_bollinger(closes: List[float], period: int = 20, mult: float = 2.0) -> 
     upper = middle + mult * stdev
     lower = middle - mult * stdev
     return upper, middle, lower
+
+
+def calc_bollinger_bandwidth(closes: List[float], period: int = 20, mult: float = 2.0) -> float:
+    """
+    计算布林带宽（Bandwidth）：衡量波动率收缩/扩张
+    Bandwidth = (Upper - Lower) / Middle
+    带宽极低（< 0.1）= 布林带收缩 = 真震荡市，适合波段操作
+    带宽高（> 0.2）= 布林带扩张 = 趋势行情，不是震荡市
+    """
+    upper, middle, lower = calc_bollinger(closes, period, mult)
+    if middle == 0 or upper == lower:
+        return 0.0
+    return (upper - lower) / middle
 
 
 def analyze_consolidate(
@@ -131,6 +161,20 @@ def analyze_consolidate(
 
     result.buy_count = len(buy_triggered)
 
+    # ===== P4新增：布林带宽过滤（只做真震荡市）=====
+    # 带宽 >= 0.20 → 布林带扩张，趋势行情，不适合震荡市波段
+    # 带宽 < 0.10 → 真震荡（极度收敛），最佳波段机会
+    # 带宽 0.10~0.20 → 普通震荡，正常判断
+    bw = calc_bollinger_bandwidth(closes)
+    is_true_consolidation = bw < 0.15   # 真震荡标志，信号打折使用
+    is_high_volatility = bw >= 0.20    # 高波动/趋势，不做震荡市买入
+
+    if is_high_volatility:
+        # 布林带扩张 = 趋势市场，震荡市策略不适用，直接 WATCH
+        result.decision = "WATCH"
+        result.position_ratio = 0.0
+        return result
+
     # ===== 卖出信号 =====
     # 触及布林上轨（区间上沿，高抛）
     if bb_upper > 0 and current_price >= bb_upper * 0.98:
@@ -171,19 +215,21 @@ def analyze_consolidate(
             result.sell_signals.append(f"亏损{loss_pct:.1f}%超限")
             return result
 
-    # ===== 决策 =====
+    # ===== P3+P4：加权得分买入决策（受带宽门控）=====
+    def calc_ws(triggered): return sum(CONS_BUY_WEIGHTS.get(s, 0.0) for s in triggered)
+    ws = calc_ws(buy_triggered)
+
+    # 真震荡（带宽<0.10）：额外加分，宽松通过
+    if bw < 0.10 and ws >= 0.3:
+        ws = min(ws * 1.3, 1.5)  # 真震荡信号强化，最多不超过1.5
+
     if buy_price == 0:
-        # 无持仓 → 买入
-        if len(buy_triggered) >= 2:
+        if ws >= CONS_BUY_THRESHOLD:
             result.decision = "BUY"
-            if len(buy_triggered) == 3:
-                result.position_ratio = 1.0
-            else:
-                result.position_ratio = 0.5
+            result.position_ratio = min(ws / 1.2, 1.0)
         else:
             result.decision = "WATCH"
     else:
-        # 持仓中
         if result.sell_count >= 1:
             result.decision = "SELL"
         else:

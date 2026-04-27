@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-astock-signal 主入口
+astock-signal v6.0 主入口
 A股信号灯 - CLI工具
 
 用法:
   python main.py pool list              # 查看股票池
+  python main.py analyze --pool         # 分析股票池所有股票
+  python main.py watch                  # 实时监控（单次）
+  python main.py watch --continuous    # 实时持续监控
+  python main.py evolution status       # 查看自进化系统状态
   python main.py pool add 000629       # 添加股票
   python main.py pool remove 000629    # 删除股票
   python main.py pool enable 000629    # 启用监控
@@ -234,6 +238,14 @@ def cmd_analyze(code: str = "", pool: bool = False):
         signal = counter.count_signals(history, realtime, market_status)
         results.append(signal)
 
+        # === Phase 1: 自学习进化系统 - 记录决策日志 ===
+        try:
+            from evolution.orchestrator import on_scan_completed
+            on_scan_completed([signal], market_status.value)
+        except Exception as e:
+            logger.debug(f"[Evolution] 记录决策失败: {e}")
+        # ===========================================
+
         # 打印结果
         print(f"✅")
         print_result(signal)
@@ -278,6 +290,14 @@ def print_result(s):
 
     # ATR
     print(f"  ATR:  {s.atr:.4f} → 止损¥{s.atr_stop_loss:.2f} 止盈¥{s.take_profit_price:.2f}")
+
+    # 资金流
+    if s.money_flow:
+        mf = s.money_flow
+        safe_icon = "OK" if mf.is_safe else "OUT"
+        print(f"  资金: [{safe_icon}] 主力{mf.main_net:+.0f}万 大单{mf.big_net:+.0f}万 DDX{mf.ddx:+.3f} | {mf.signal}")
+    else:
+        print(f"  资金: (未获取)")
 
     # 信号
     print(f"\n  🟢 买入信号: {s.buy_count}/10")
@@ -399,6 +419,14 @@ def _run_watch_scan(watchlist, manual: bool = False):
     # 汇总
     if signals:
         _print_watch_summary(signals)
+
+        # === Phase 1: 自学习进化系统 - 记录决策日志（静默）===
+        try:
+            from evolution.orchestrator import on_scan_completed
+            on_scan_completed(signals, market_status.value)
+        except Exception as e:
+            logger.debug(f"[Evolution] 记录决策失败（不中断流程）: {e}")
+        # =========================================================
 
         # 发送飞书通知
         notifier = get_feishu_notifier()
@@ -600,8 +628,54 @@ def cmd_report():
         }
         notifier.send_position_report(positions, portfolio)
 
+    # === Phase 2/4: 收盘后更新统计 & 影子收益补充 ===
+    try:
+        from evolution.orchestrator import on_market_close
+        on_market_close()
+    except Exception as e:
+        logger.debug(f"[Evolution] 收盘后统计更新失败: {e}")
+    # ===========================================
+
 
 # ==================== 设置 ====================
+
+def cmd_evolution(args):
+    """自学习进化系统状态查看"""
+    from evolution.weight_manager import _load_cycle_state, get_current_weights, get_pending_suggestion
+    from evolution.stats_analyzer import get_stats
+    from evolution.decision_logger import count_records
+
+    state = _load_cycle_state()
+    pending = state.get('pending_suggestion') or {}
+
+    print("📊 信号灯自学习系统")
+    print("─" * 40)
+    print(f"  周期: Cycle {state['current_cycle']} | 阶段: {state['current_phase']}")
+    print(f"  当前权重: {state['current_weight_version']}")
+    print(f"  学习开始: {state.get('learning_start') or '今日'}")
+    print(f"  验证开始: {state.get('verification_start') or '—'}")
+    print(f"  待确认建议: {pending.get('version') or '无'}")
+    print()
+
+    if args.subcommand == "stats":
+        stats = get_stats()
+        if stats:
+            print(f"  总决策记录: {stats.get('total_records', 0)}")
+            for name, d in stats.get('signal_types', {}).items():
+                wr = d.get('win_rate_5d', 0)
+                emoji = "🟢" if wr > 0.6 else "🟡" if wr > 0.4 else "🔴"
+                print(f"  {emoji} {name}: 胜率 {wr:.0%}（{d.get('count',0)}次）")
+        else:
+            print("  暂无统计数据（运行analyze/watch积累数据后可见）")
+    elif args.subcommand == "weights":
+        w = get_current_weights()
+        print("  当前权重参数:")
+        for k, v in sorted(w.items()):
+            print(f"    {k}: {v}")
+    else:
+        print("  子命令: status | stats | weights")
+        print("  用法: python main.py evolution stats")
+
 
 def cmd_llm(args):
     """大模型配置和测试"""
@@ -841,6 +915,12 @@ def main():
     settings_parser.add_argument("--llm-api-key", dest="llm_api_key")
     settings_parser.add_argument("--llm-base-url", dest="llm_base_url")
 
+    evolution_parser = subparsers.add_parser("evolution", help="自学习进化系统")
+    evo_sub = evolution_parser.add_subparsers(dest="subcommand")
+    evo_status = evo_sub.add_parser("status", help="查看系统状态")
+    evo_sub.add_parser("stats", help="查看信号有效性统计")
+    evo_sub.add_parser("weights", help="查看当前权重")
+
     args = parser.parse_args()
 
     # 确保数据目录存在
@@ -878,6 +958,9 @@ def main():
 
     elif args.command == "settings":
         cmd_settings(args)
+
+    elif args.command == "evolution":
+        cmd_evolution(args)
 
     elif args.command == "llm":
         cmd_llm(args)

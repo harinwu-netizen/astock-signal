@@ -185,14 +185,13 @@ class BacktestEngine:
         index_date_to_idx: dict,
     ) -> MarketStatus:
         """
-        给定日期，检测当日的市场状态
-        用该日之前25日指数数据判断
+        给定日期，检测当日的市场状态（v5.7 P2 置信度版）
+        用该日之前25日指数数据判断，含置信度计算和低置信震荡市降级
         """
         idx = index_date_to_idx.get(date)
         if idx is None or idx < 25:
             return MarketStatus.CONSOLIDATE
 
-        # 取该日为止的历史窗口
         window = index_hist[max(0, idx - 24):idx + 1]
         if len(window) < 20:
             return MarketStatus.CONSOLIDATE
@@ -209,12 +208,25 @@ class BacktestEngine:
             ma_bull = ma5 > ma10 > ma20
             ma_bear = ma5 < ma10 < ma20
 
+            # ---- P2新增：置信度计算 ----
+            ma_spread = abs(ma5 - ma10) / ma10 * 100 if ma10 > 0 else 0
+            trend_strength = abs(ma5 - ma20) / ma20 * 100 if ma20 > 0 else 0
+
             if change_5d > 0 and ma_bull:
-                return MarketStatus.STRONG
+                confidence = min(trend_strength / 5.0, 1.0)
+                regime = MarketStatus.STRONG
             elif change_5d < -1.5 or ma_bear:
-                return MarketStatus.WEAK
+                confidence = min(trend_strength / 5.0, 1.0)
+                regime = MarketStatus.WEAK
             else:
-                return MarketStatus.CONSOLIDATE
+                confidence = max(0.0, 1.0 - (ma_spread / 3.0))
+                regime = MarketStatus.CONSOLIDATE
+
+            # ---- P2新增：低置信震荡市降级为弱市 ----
+            if regime == MarketStatus.CONSOLIDATE and confidence < 0.4:
+                regime = MarketStatus.WEAK
+
+            return regime
         except Exception:
             return MarketStatus.CONSOLIDATE
 
@@ -344,7 +356,7 @@ class BacktestEngine:
 
             # ---- 计算信号（传入真实市场状态）----
             try:
-                signal = self.counter.count_signals(window, fake_rt, market_status=market_status, buy_price=0)
+                signal = self.counter.count_signals(window, fake_rt, market_status=market_status, buy_price=0, skip_money_flow=True)
             except Exception as e:
                 logger.debug(f"[Backtest] {date} 信号异常: {e}")
                 equity_curve.append({

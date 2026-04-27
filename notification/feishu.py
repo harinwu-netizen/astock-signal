@@ -54,7 +54,7 @@ class FeishuNotifier:
         try:
             import requests
             resp = requests.post(
-                "http://localhost:18789/api/message/send",
+                "http://localhost:19277/api/message/send",
                 json={
                     "channel": "feishu",
                     "target": self.user_id,
