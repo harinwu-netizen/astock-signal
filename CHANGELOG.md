@@ -100,6 +100,125 @@ python3 main.py evolution weights   # 查看当前权重参数
 
 ---
 
+## v6.1（2026-05-06）
+
+**主题：资金流数据源双保险（东方财富 + QVeris/财达） + 飞书发送双保险**
+
+---
+
+### 🔧 飞书发送双保险机制
+
+**问题**：飞书插件偶发性消息丢失（网络抖动/openclaw进程不稳定）
+
+**解决**：重构 `notification/feishu.py` 为双保险发送：
+1. **第一优先**：subprocess 调用 `openclaw message send --channel feishu`（直接发）
+2. **fallback**：写入 `data/pending_messages.json`，由 `scripts/send_pending.py` 每5秒轮询重发
+
+新增文件 `scripts/send_pending.py`：后台服务，监控 pending 文件并确保消息最终送达。
+
+---
+
+### 💰 资金流双保险
+
+东方财富资金流 AI 接口（`ai-saas.eastmoney.com`）有调用次数上限，
+超限后资金流数据断连。新增 QVeris/财达 作为 fallback。
+
+**新增文件：**
+- `data_provider/qveris_money_flow.py` — QVeris/财达资金流适配器（`caidazi.get_stock_moneyflow`）
+
+**改动文件：**
+- `data_provider/money_flow.py` — `get_money_flow()` 双保险逻辑 + `MoneyFlowData` 新增 `mid_net` 字段
+
+**调用逻辑：**
+```
+get_money_flow(code)
+  └→ 东方财富 API（EM_API_KEY）
+       ├─ 成功 → 返回 MoneyFlowData
+       └─ 失败/超限 → QVeris/财达（caidazi.get_stock_moneyflow）
+            ├─ 成功 → 返回 MoneyFlowData（main_net/super_net/big_net/small_net/mid_net）
+            └─ 失败 → 返回 None
+```
+
+---
+
+## v6.2（2026-06-03）⭐ 飞书发送链路 C 方案改造
+
+**主题：飞书发送链路收敛 — 单一 outbox 路径 + 健康检查 + 失败告警**
+
+### 🔥 问题背景
+
+v6.0/v6.1 时代的飞书发送链路存在三大隐患：
+
+| 隐患 | 表现 |
+|------|------|
+| 多通道并存 | `subprocess CLI` + `pending 文件` + `OpenClaw 兜底` 三条路径同时定义 |
+| 路径 1 失效 | `subprocess.run(["openclaw","message","send"])` 自 2026-04-01 起一直失败（CLI 包找不到），累计 466/466 失败 |
+| 死循环 | `send_pending.py` 后台进程（PID 1643819）每 5 秒重试，落账 466 条均失败 |
+
+用户**今天**能收到报告，完全依赖 OpenClaw 平台内部兜底，不是信号灯代码本身的功劳。
+
+### 🛠 改造方案：C 方案
+
+**核心思想**：代码里**只剩 1 条发送路径**，且这条路径 100% 走通。
+
+**链路**：
+```
+信号灯扫描
+  ↓
+FeishuNotifier (v4) — notification/feishu.py
+  ├─ 成功 → 写 data/outbox/{timestamp}_{id}.json
+  │         → 小海(OpenClaw heartbeat)检测 status=="pending"
+  │         → OpenClaw message tool → 飞书私聊
+  │         → 回写 status="delivered" + feishu_message_id
+  │
+  └─ 失败 → 写 data/send_health.json (outbox_failed)
+            → 写 data/alert_needed.flag
+            → 小海检测告警标志 → 飞书推送 🚨
+```
+
+### 📦 改动文件
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `notification/feishu.py` | v3 → v4 重写 | 删除 subprocess + pending 双路径,改为单一 outbox |
+| `scripts/send_pending.py` | 重写 | 死循环进程 → outbox 应急工具(list/clear/health) |
+| `backup/feishu_v3_subprocess_backup.py` | 新增 | 旧版备份,6.7 KB |
+| `data/outbox/` | 新建目录 | 信号灯输出,小海读取 |
+| `data/send_health.json` | 新建 | 健康检查(总写入/总失败/最近 50 条 history) |
+| `data/alert_needed.flag` | 临时文件 | 失败告警标志,小海检测后立即推送 |
+
+### 🧹 清理
+
+- 杀掉 PID 1643819（send_pending.py 死循环进程）
+- 删除 `logs/send_pending*.log`、`logs/watcher*.log` 旧日志
+
+### ✅ 验证结果
+
+| 测试项 | 结果 |
+|--------|------|
+| 单条测试消息（outbox 写入 + 转发） | ✅ `20260603_220031_869573be` 送达 |
+| 完整扫描回归测试（7/7 只） | ✅ `20260603_220427_8cff629f` 送达 |
+| 故障注入（open() 抛 OSError） | ✅ 健康检查记 1 次失败,告警标志文件创建 |
+| 告警链路（flag → 飞书 🚨） | ✅ 推送成功 |
+| 死循环进程 | ✅ 已清除 |
+
+### 📋 新增命令
+
+```bash
+python3 scripts/send_pending.py list     # 查看 outbox 积压
+python3 scripts/send_pending.py clear    # 清空 outbox(应急)
+python3 scripts/send_pending.py health   # 查看健康状态
+```
+
+### ⚠️ 关键决策
+
+- **不依赖** OpenClaw 内部 message API（避免未知端点风险）
+- **不依赖** subprocess CLI（已废弃路径）
+- **不依赖** send_pending.py 自动轮询（改为应急工具）
+- **保留** OpenClaw 平台兜底作为最后一道防线（不动它）
+
+---
+
 ## v5.8 （2026-04-27）
 
 **主题：基于P4回测结果的针对性优化（震荡市/弱市过滤）**

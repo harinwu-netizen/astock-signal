@@ -1,162 +1,124 @@
 # -*- coding: utf-8 -*-
 """
-飞书通知模块 v2
-支持两种推送方式：
-1. OpenClaw Gateway API（优先，用于直接发消息给用户）
-2. 群体机器人Webhook（备用）
+飞书通知模块 v4 (C方案改造)
+发送方式：单一路径
+1. 写 outbox 文件 → 由 小海(OpenClaw) 在 heartbeat 时读取转发到飞书
+
+设计原则：
+- 单一发送路径，避免多通道重复/漏发
+- 不依赖 subprocess CLI（已废弃）
+- 不依赖 send_pending.py 轮询（已废弃）
+- 失败时记录到 send_health.json，由下一轮扫描触发告警
 """
 
 import logging
 import json
 import os
-import requests
-import subprocess
+import uuid
 from datetime import datetime
 from config import get_config
 
 logger = logging.getLogger(__name__)
 
-# OpenClaw Gateway 直发消息的配置文件
-PENDING_MSG_FILE = "data/pending_messages.json"
+OUTBOX_DIR = "data/outbox"
+HEALTH_FILE = "data/send_health.json"
+TARGET_USER_ID = "ou_ee2947ff311d4978679c2a2d4433f62a"
 
 
 class FeishuNotifier:
-    """飞书通知推送"""
+    """飞书通知推送 (v4 - outbox 单一路径)"""
 
-    def __init__(self, webhook_url: str = ""):
-        config = get_config()
-        self.webhook_url = webhook_url or config.feishu_webhook_url
-        self.enabled = True  # 始终启用，fallback到日志
-        self.user_id = "ou_ee2947ff311d4978679c2a2d4433f62a"  # 默认发送目标
+    def __init__(self):
+        self.enabled = True
+        self.user_id = TARGET_USER_ID
+        os.makedirs(OUTBOX_DIR, exist_ok=True)
 
-    def send(self, content: str, msg_type: str = "text") -> bool:
+    def send(self, content: str, msg_type: str = "markdown") -> bool:
         """
-        发送飞书消息（优先用OpenClaw直发，失败用Webhook）
+        发送飞书消息 - 单一路径：写入 outbox
 
-        Args:
-            content: 消息内容
-            msg_type: text 或 markdown
+        Returns: True 表示成功写入 outbox（不代表已送达）
         """
-        # 优先方案：通过OpenClaw Gateway API 发送
-        if self._send_via_openclaw(content, msg_type):
-            return True
+        return self._write_to_outbox(content, msg_type, kind="text")
 
-        # 备用方案：Webhook
-        if self.webhook_url:
-            return self._send_via_webhook(content, msg_type)
+    def _write_to_outbox(self, content: str, msg_type: str, kind: str = "text") -> bool:
+        """
+        写入 outbox 文件，由 OpenClaw heartbeat 读取转发
 
-        # 最终fallback：写入文件
-        logger.warning("飞书未配置，写入pending文件")
-        return self._save_to_file(content, msg_type)
-
-    def _send_via_openclaw(self, content: str, msg_type: str = "text") -> bool:
-        """通过OpenClaw Gateway HTTP API发送消息（直接发给用户）"""
+        文件命名: outbox/{timestamp}_{uuid}.json
+        """
         try:
-            import requests
-            resp = requests.post(
-                "http://localhost:19277/api/message/send",
-                json={
-                    "channel": "feishu",
-                    "target": self.user_id,
-                    "message": content,
-                },
-                timeout=30,
-            )
-            if resp.status_code == 200:
-                logger.info(f"[FeishuNotifier] Gateway API发送成功")
-                return True
-            else:
-                logger.warning(f"[FeishuNotifier] Gateway API返回 {resp.status_code}: {resp.text[:100]}")
-                return False
-        except ImportError:
-            logger.warning("requests库不可用，尝试subprocess")
-            return self._send_via_subprocess(content, msg_type)
-        except Exception as e:
-            logger.warning(f"[FeishuNotifier] Gateway API发送失败: {e}")
-            return False
+            os.makedirs(OUTBOX_DIR, exist_ok=True)
+            msg_id = uuid.uuid4().hex[:8]
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{timestamp}_{msg_id}.json"
+            filepath = os.path.join(OUTBOX_DIR, filename)
 
-    def _send_via_subprocess(self, content: str, msg_type: str = "text") -> bool:
-        """通过subprocess调用openclaw CLI发送（备用）"""
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["openclaw", "message", "send",
-                 "--channel", "feishu",
-                 "--target", self.user_id,
-                 "--message", content],
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            if result.returncode == 0:
-                logger.info(f"[FeishuNotifier] CLI发送成功")
-                return True
-            else:
-                logger.warning(f"[FeishuNotifier] CLI发送失败: {result.stderr[:100]}")
-                return False
-        except Exception as e:
-            logger.warning(f"[FeishuNotifier] CLI发送异常: {e}")
-            return False
-
-    def _send_via_webhook(self, content: str, msg_type: str = "text") -> bool:
-        """通过群体机器人Webhook发送"""
-        if not self.webhook_url:
-            return False
-
-        try:
-            headers = {"Content-Type": "application/json"}
-
-            if msg_type == "markdown":
-                # 飞书markdown格式
-                payload = {
-                    "msg_type": "markdown",
-                    "content": {
-                        "text": content
-                    }
-                }
-            else:
-                payload = {
-                    "msg_type": "text",
-                    "content": {"text": content}
-                }
-
-            resp = requests.post(self.webhook_url, json=payload, headers=headers, timeout=10)
-            resp.raise_for_status()
-            result = resp.json()
-            if result.get("code") == 0 or result.get("StatusCode") == 0:
-                logger.info("飞书Webhook消息发送成功")
-                return True
-            else:
-                logger.error(f"飞书Webhook发送失败: {result}")
-                return False
-
-        except Exception as e:
-            logger.error(f"飞书Webhook异常: {e}")
-            return False
-
-    def _save_to_file(self, content: str, msg_type: str = "text") -> bool:
-        """保存到待发消息文件"""
-        try:
-            os.makedirs(os.path.dirname(PENDING_MSG_FILE) or ".", exist_ok=True)
-            pending = []
-            if os.path.exists(PENDING_MSG_FILE):
-                with open(PENDING_MSG_FILE, "r") as f:
-                    pending = json.load(f)
-
-            pending.append({
+            payload = {
+                "id": msg_id,
                 "content": content,
                 "msg_type": msg_type,
                 "target": self.user_id,
+                "kind": kind,
                 "created_at": datetime.now().isoformat(),
-            })
+                "status": "pending",
+            }
 
-            with open(PENDING_MSG_FILE, "w") as f:
-                json.dump(pending, f, ensure_ascii=False, indent=2)
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
 
+            logger.info(f"[FeishuNotifier] 消息已写入 outbox: {filename} ({len(content)} chars)")
+            self._record_health("outbox_written", filename, len(content))
             return True
+
         except Exception as e:
-            logger.error(f"保存待发消息失败: {e}")
+            logger.error(f"[FeishuNotifier] 写入 outbox 失败: {e}")
+            self._record_health("outbox_failed", "", 0, str(e))
+            self._write_alert_flag(str(e))
             return False
+
+    def _write_alert_flag(self, error_msg: str):
+        """写入告警标志文件,小海(OpenClaw)检测后会立即推送告警"""
+        try:
+            alert_path = "data/alert_needed.flag"
+            with open(alert_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "type": "feishu_send_failed",
+                    "error": error_msg,
+                    "created_at": datetime.now().isoformat(),
+                }, ensure_ascii=False))
+        except Exception as e:
+            logger.error(f"[FeishuNotifier] 写入告警标志失败: {e}")
+
+    def _record_health(self, status: str, msg_file: str = "", content_len: int = 0, error: str = ""):
+        """记录发送健康状态"""
+        try:
+            health = {"history": []}
+            if os.path.exists(HEALTH_FILE):
+                with open(HEALTH_FILE, "r", encoding="utf-8") as f:
+                    health = json.load(f)
+
+            # 只保留最近 50 条
+            health["history"] = health.get("history", [])
+            health["history"].append({
+                "timestamp": datetime.now().isoformat(),
+                "status": status,
+                "msg_file": msg_file,
+                "content_len": content_len,
+                "error": error,
+            })
+            health["history"] = health["history"][-50:]
+
+            # 统计
+            health["total_outbox_written"] = sum(1 for h in health["history"] if h["status"] == "outbox_written")
+            health["total_outbox_failed"] = sum(1 for h in health["history"] if h["status"] == "outbox_failed")
+            health["last_status"] = status
+            health["last_update"] = datetime.now().isoformat()
+
+            with open(HEALTH_FILE, "w", encoding="utf-8") as f:
+                json.dump(health, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.debug(f"记录健康状态失败: {e}")
 
     def send_signal_report(self, signals: list) -> bool:
         """发送信号扫描报告"""
@@ -192,7 +154,7 @@ class FeishuNotifier:
             lines.append("")
 
         content = "\n".join(lines)
-        return self.send(content, msg_type="markdown")
+        return self._write_to_outbox(content, "markdown", kind="signal_report")
 
     def send_position_report(self, positions: list, portfolio: dict) -> bool:
         """发送持仓日报"""
@@ -219,7 +181,7 @@ class FeishuNotifier:
             lines.append("")
 
         content = "\n".join(lines)
-        return self.send(content, msg_type="markdown")
+        return self._write_to_outbox(content, "markdown", kind="position_report")
 
     def send_trade_notification(self, trade: dict) -> bool:
         """发送交易通知（买入/卖出/止损）"""
@@ -243,7 +205,12 @@ class FeishuNotifier:
         ]
 
         content = "\n".join(lines)
-        return self.send(content, msg_type="markdown")
+        return self._write_to_outbox(content, "markdown", kind="trade_notification")
+
+    def send_alert(self, alert_msg: str) -> bool:
+        """发送告警消息（高优先级）"""
+        content = f"🚨 **信号灯告警**\n\n{alert_msg}\n\n🕐 {self._now()}"
+        return self._write_to_outbox(content, "markdown", kind="alert")
 
     def _now(self) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M")
