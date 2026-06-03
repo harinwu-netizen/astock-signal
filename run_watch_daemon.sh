@@ -41,14 +41,18 @@ is_trading_day() {
     return 0  # 工作日
 }
 
-# 交易时段判断(09:15 ~ 15:00)
+# 交易时段判断(10:00-11:30 / 13:00-15:00,跳午休 11:30-13:00)
 is_trading_hours() {
     local now=$(date +%H%M)
-    if [ "$now" -ge "0915" ] && [ "$now" -lt "1500" ]; then
+    # 上午 10:00-11:30
+    if [ "$now" -ge "1000" ] && [ "$now" -lt "1130" ]; then
         return 0
-    else
-        return 1
     fi
+    # 下午 13:00-15:00
+    if [ "$now" -ge "1300" ] && [ "$now" -lt "1500" ]; then
+        return 0
+    fi
+    return 1
 }
 
 # 进程判活(pid 存在 + 进程确实在跑)

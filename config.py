@@ -39,9 +39,11 @@ class Config:
     take_profit_pct: float = 15.0       # 止盈线（%）（震荡市）
     atr_stop_multiplier: float = 2.0    # ATR止损倍数（震荡市）
 
-    # 开仓时间窗口
-    open_window_start: str = "09:30"   # 开仓窗口开始（全天可交易）
-    open_window_end: str = "15:00"      # 开仓窗口结束
+    # 开仓时间窗口（v6.5: 跳午休,上午 10:00-11:30 / 下午 13:00-15:00）
+    open_window_start: str = "10:00"   # 上午开仓开始
+    open_window_morning_end: str = "11:30"  # 上午开仓结束
+    open_window_afternoon_start: str = "13:00"  # 下午开仓开始
+    open_window_end: str = "15:00"      # 下午开仓结束
 
     # ===== 弱强市策略参数（v5.0新架构）=====
     # 弱市反弹策略

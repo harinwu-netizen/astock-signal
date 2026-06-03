@@ -45,6 +45,22 @@ from strategy.market_filter import get_market_filter, get_market_warning
 from trading.pre_check import PreTradeChecker
 from notification.feishu import get_feishu_notifier
 
+def is_in_open_window(now_time=None) -> bool:
+    """
+    判断当前时间是否在开仓窗口内
+    v6.5: 两段窗口(跳午休),10:00-11:30 / 13:00-15:00
+    """
+    if now_time is None:
+        now_time = datetime.now().time()
+    # 上午 10:00-11:30
+    if dtime(10, 0) <= now_time < dtime(11, 30):
+        return True
+    # 下午 13:00-15:00
+    if dtime(13, 0) <= now_time < dtime(15, 0):
+        return True
+    return False
+
+
 def is_trading_day() -> bool:
     """判断今天是否为A股交易日（检查上证指数是否有今日数据）"""
     from datetime import datetime
@@ -268,6 +284,22 @@ def cmd_analyze(code: str = "", pool: bool = False):
         if notifier.enabled:
             notifier.send_signal_report(results)
 
+        # 刷新已有持仓的现价和浮盈
+        try:
+            from models.position import PositionStore
+            pos_store = PositionStore()
+            open_pos = pos_store.load()
+            for pos in open_pos:
+                if pos.status == "open":
+                    sig = next((s for s in results if s.code == pos.code), None)
+                    if sig:
+                        pos.current_price = sig.price
+                        pos.update_current(sig.price)
+            if open_pos:
+                pos_store.save(open_pos)
+        except Exception as e:
+            logger.debug(f"[持仓刷新] 失败: {e}")
+
     return results
 
 
@@ -353,13 +385,10 @@ def cmd_watch(continuous: bool = False):
     now = datetime.now()
     now_time = now.time()
 
-    # 开仓窗口判断
-    open_start = datetime.strptime(config.open_window_start, "%H:%M").time()
-    open_end = datetime.strptime(config.open_window_end, "%H:%M").time()
-
-    in_window = open_start <= now_time <= open_end
+    # 开仓窗口判断（v6.5: 两段窗口,跳午休）
+    in_window = is_in_open_window(now_time)
     print(f"\n当前时间: {now.strftime('%H:%M:%S')}")
-    print(f"开仓窗口: {config.open_window_start}-{config.open_window_end}")
+    print(f"开仓窗口: 10:00-11:30 / 13:00-15:00 (v6.5 跳午休)")
     print(f"是否在窗口: {'✅ 是' if in_window else '❌ 否'}")
     print()
 
@@ -427,6 +456,22 @@ def _run_watch_scan(watchlist, manual: bool = False):
         except Exception as e:
             logger.debug(f"[Evolution] 记录决策失败（不中断流程）: {e}")
         # =========================================================
+
+        # 刷新已有持仓的现价和浮盈（每次scan都更新）
+        try:
+            from models.position import PositionStore
+            pos_store = PositionStore()
+            open_pos = pos_store.load()
+            for pos in open_pos:
+                if pos.status == "open":
+                    sig = next((s for s in signals if s.code == pos.code), None)
+                    if sig:
+                        pos.current_price = sig.price
+                        pos.update_current(sig.price)
+            if open_pos:
+                pos_store.save(open_pos)
+        except Exception as e:
+            logger.debug(f"[持仓刷新] 失败: {e}")
 
         # 发送飞书通知
         notifier = get_feishu_notifier()

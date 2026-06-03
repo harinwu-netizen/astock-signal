@@ -12,7 +12,7 @@ from pathlib import Path
 import time
 import signal
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
 from typing import List, Optional
 def is_trading_day() -> bool:
     """判断今天是否为A股交易日（非周末且市场有数据）"""
@@ -30,6 +30,7 @@ def is_trading_day() -> bool:
         # 数据获取失败时，保守假设是交易日（避免漏扫）
         return True
 from models.watchlist import WatchlistStore
+from config import get_config
 from models.position import PositionStore
 from models.signal import MarketStatus, Decision
 from monitor.scanner import Scanner
@@ -102,23 +103,24 @@ class Watcher:
             now = datetime.now()
             now_time = now.time()
 
-            open_start = datetime.strptime(config.open_window_start, "%H:%M").time()
-            open_end = datetime.strptime(config.open_window_end, "%H:%M").time()
+            # v6.5: 两段窗口(跳午休),使用 main.is_in_open_window()
+            from main import is_in_open_window
+            in_window = is_in_open_window(now_time)
 
             # 在窗口内？
-            if open_start <= now_time <= open_end:
+            if in_window:
                 logger.info(f"🟢 进入开仓窗口: {now.strftime('%H:%M:%S')}")
                 self._run_scan_cycle()
                 # 每5分钟扫描一次
                 time.sleep(config.watch_interval)
-            elif now_time > open_end:
-                # 窗口已过，退出
-                logger.info(f"⏰ 开仓窗口已过({open_end})，监控结束")
+            elif now_time >= dtime(15, 0):
+                # 窗口已过(15:00),退出
+                logger.info(f"⏰ 开仓窗口已过(15:00),监控结束")
                 break
             else:
-                # 等待
+                # 等待(包含 09:15-10:00 / 11:30-13:00 午休)
                 wait_secs = 60
-                logger.debug(f"等待开仓窗口，还有 {wait_secs}秒")
+                logger.debug(f"等待开仓窗口，还有 {wait_secs}秒 (10:00-11:30 / 13:00-15:00)")
                 time.sleep(wait_secs)
 
     def _run_continuous(self):
@@ -171,8 +173,12 @@ class Watcher:
         # 8. 更新持仓信号
         self._update_positions(signals)
 
-        # 9. 发送通知
-        if self.notifier.enabled:
+        # 9. 发送通知（v6.5: 仅在开仓窗口内发送,避免休市/午休期间骚扰）
+        from datetime import datetime as _dt
+        from main import is_in_open_window as _is_in_open_window
+        now_time = _dt.now().time()
+        in_window = _is_in_open_window(now_time)
+        if self.notifier.enabled and in_window:
             self.notifier.send_signal_report(signals)
 
     def _detect_market_regime(self):
