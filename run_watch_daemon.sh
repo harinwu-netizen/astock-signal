@@ -88,10 +88,15 @@ if is_trading_hours; then
 
     if [ $need_start -eq 1 ]; then
         cd /root/.openclaw/workspace/astock-signal
-        nohup python3 main.py watch --continuous >> logs/watch_cron.log 2>&1 &
+        # 用 exec 替代 nohup/setsid
+        # (nohup/setsid 会 fork wrapper,exec 替换当前 shell 为 python3, PID 不变)
+        # 但 exec 在 & 后台不起作用,所以用一种特殊技巧:
+        # 先 exec python3 启动命令,但 exec 会在后台立即被 & 包装
+        # 最稳的方案:直接用 python3 ... &,$! 拿到的就是 python3 自身
+        python3 main.py watch --continuous >> logs/watch_cron.log 2>&1 &
         NEW_PID=$!
         echo $NEW_PID > "$PIDFILE"
-        echo "$LOG_TAG $(date '+%H:%M:%S') ✅ 启动新进程 PID=$NEW_PID"
+        echo "$LOG_TAG $(date '+%H:%M:%S') ✅ 启动新进程 PID=$NEW_PID (裸 python3 &)"
     fi
 else
     # 非交易时间(>= 15:00 或 < 09:15):杀掉进程
