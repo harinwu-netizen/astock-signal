@@ -1,13 +1,13 @@
 """
 资金流数据获取器
 使用东方财富 EM_API_KEY 获取主力资金流数据
+东方财富超限后自动切换 QVeris/财达 作为 fallback
 """
 import asyncio
 import logging
 import os
-import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import httpx
 
@@ -15,6 +15,11 @@ logger = logging.getLogger("MoneyFlow")
 
 API_URL = "https://ai-saas.eastmoney.com/proxy/app-robo-advisor-api/assistant/ask"
 API_KEY = os.environ.get("EM_API_KEY", "")
+
+# QVeris fallback
+from data_provider.qveris_money_flow import get_money_flow_via_qveris
+# 妙查 fallback (v6.3,2026-06-03)
+from data_provider.miaochang_money_flow import get_money_flow_via_miaochang
 
 
 @dataclass
@@ -32,28 +37,25 @@ class MoneyFlowData:
     super_in: float     # 超大单流入（万元）
     super_out: float    # 超大单流出（万元）
     small_net: float    # 小单净流入（万元）
+    mid_net: float     # 中单净流入（万元，QVeris财达提供）
     ddx: float         # DDX 指标
     ddy: float          # DDY 指标
     date: str           # 数据日期
 
     @property
     def is_main_net_inflow(self) -> bool:
-        """主力是否净流入"""
         return self.main_net > 0
 
     @property
     def is_big_net_inflow(self) -> bool:
-        """大单是否净流入"""
         return self.big_net > 0
 
     @property
     def is_safe(self) -> bool:
-        """资金面是否安全（主力净流入 或 大单净流入）"""
         return self.main_net > 0 or self.big_net > 0
 
     @property
     def signal(self) -> str:
-        """资金流信号描述"""
         if self.main_net > 0 and self.big_net > 0:
             return "主力+大单双净流入"
         elif self.main_net > 0:
@@ -69,7 +71,6 @@ class MoneyFlowData:
         return "资金平衡"
 
     def veto_reason(self) -> str:
-        """返回否决原因（资金流出时）"""
         reasons = []
         if self.main_net < 0:
             reasons.append(f"主力净流出{self.main_net:.0f}万")
@@ -81,22 +82,16 @@ class MoneyFlowData:
 
 
 def _parse_table_value(table_md: str, key: str) -> Optional[float]:
-    """从 markdown 表格中提取指定 key 的数值（第二列）"""
     lines = table_md.strip().split("\n")
     for line in lines:
-        # 跳过表头行和分隔符行
         stripped = line.strip()
         if not stripped or stripped.startswith('| ---') or '数据如下' in stripped:
             continue
         if key not in stripped or '|' not in stripped:
             continue
-        
         parts = [p.strip() for p in stripped.split('|')]
-        # parts = ['', 'key', 'value', ...] 或 ['', 'key', 'value']
-        # 我们要的是 key 之后的第一列数值
         for i, part in enumerate(parts):
             if key in part:
-                # 找下一列
                 if i + 1 < len(parts):
                     val_str = parts[i + 1].strip()
                     val = _convert_unit(val_str)
@@ -106,10 +101,8 @@ def _parse_table_value(table_md: str, key: str) -> Optional[float]:
 
 
 def _convert_unit(val_str: str) -> Optional[float]:
-    """将带单位的字符串转为万元数值"""
     if not val_str:
         return None
-    # 去掉逗号
     val_str = val_str.replace(",", "")
     is_yi = "亿" in val_str
     val_str = val_str.replace("亿", "").replace("万元", "").replace("万", "").strip()
@@ -121,9 +114,7 @@ def _convert_unit(val_str: str) -> Optional[float]:
 
 
 def _parse_markdown_tables(refs: List[dict]) -> Dict[str, float]:
-    """解析所有参考数据的 markdown 表格，提取资金流数值"""
     result = {}
-
     field_map = {
         "主力净流入": ["主力净流入", "主力净流入资金", "主力净额"],
         "主力流入": ["主力流入", "主力流入资金"],
@@ -138,42 +129,97 @@ def _parse_markdown_tables(refs: List[dict]) -> Dict[str, float]:
         "DDX": ["DDX"],
         "DDY": ["DDY"],
     }
-
     for ref in refs:
         if ref.get("type") != "查数":
             continue
         markdown = ref.get("markdown", "")
         if not markdown:
             continue
-
         for field_name, keywords in field_map.items():
             if field_name in result:
-                continue  # 已提取过，跳过
+                continue
             for kw in keywords:
                 val = _parse_table_value(markdown, kw)
                 if val is not None:
                     result[field_name] = val
                     break
-
     return result
 
 
 def get_money_flow(code: str, name: str = "") -> Optional[MoneyFlowData]:
     """
-    获取单只股票资金流数据
-    
+    获取单只股票资金流数据（三级 fallback）
+    1. 东方财富(EM_API_KEY) — 优先
+    2. QVeris/财达 — 备选
+    3. 妙查(mx-finance-data) — 最后备选(2026-06-03 新增)
+
     Args:
         code: 股票代码，如 "000629"
         name: 股票名称，如 "钒钛股份"
-    
+
     Returns:
         MoneyFlowData 或 None（失败时）
     """
-    if not API_KEY:
-        logger.warning("EM_API_KEY 未设置，无法获取资金流数据")
-        return None
+    # ===== Step 1: 尝试东方财富 =====
+    if API_KEY:
+        result = _get_money_flow_eastmoney(code, name)
+        if result is not None:
+            return result
 
-    # 标准化代码
+    # ===== Step 2: Fallback — QVeris/财达 =====
+    logger.info("[MoneyFlow] 东方财富不可用，尝试 QVeris/财达...")
+    qveris_data = get_money_flow_via_qveris(code, name)
+    if qveris_data:
+        logger.info(f"[MoneyFlow] QVeris/财达获取成功: 主力净流入={qveris_data['main_net']:.0f}万")
+        return MoneyFlowData(
+            code=qveris_data["code"],
+            name=qveris_data["name"],
+            main_net=qveris_data["main_net"],
+            main_in=qveris_data["main_in"],
+            main_out=qveris_data["main_out"],
+            big_net=qveris_data["big_net"],
+            big_in=qveris_data["big_in"],
+            big_out=qveris_data["big_out"],
+            super_net=qveris_data["super_net"],
+            super_in=qveris_data["super_in"],
+            super_out=qveris_data["super_out"],
+            small_net=qveris_data["small_net"],
+            mid_net=qveris_data.get("mid_net", 0.0),
+            ddx=qveris_data["ddx"],
+            ddy=qveris_data["ddy"],
+            date=qveris_data["date"],
+        )
+
+    # ===== Step 3: Fallback — 妙查 (v6.3,2026-06-03) =====
+    logger.info("[MoneyFlow] QVeris/财达不可用，尝试妙查...")
+    mc_data = get_money_flow_via_miaochang(code, name)
+    if mc_data:
+        logger.info(f"[MoneyFlow] 妙查获取成功: 主力净流入={mc_data['main_net']:.0f}万")
+        return MoneyFlowData(
+            code=mc_data["code"],
+            name=mc_data["name"],
+            main_net=mc_data["main_net"],
+            main_in=mc_data["main_in"],
+            main_out=mc_data["main_out"],
+            big_net=mc_data["big_net"],
+            big_in=mc_data["big_in"],
+            big_out=mc_data["big_out"],
+            super_net=mc_data["super_net"],
+            super_in=mc_data["super_in"],
+            super_out=mc_data["super_out"],
+            small_net=mc_data["small_net"],
+            mid_net=mc_data.get("mid_net", 0.0),
+            ddx=mc_data["ddx"],
+            ddy=mc_data["ddy"],
+            date=mc_data.get("date", ""),
+        )
+
+    logger.warning(f"[MoneyFlow] 全部资金流获取方式均失败: code={code}")
+    return None
+
+
+def _get_money_flow_eastmoney(code: str, name: str = "") -> Optional[MoneyFlowData]:
+    """东方财富资金流获取（内部函数）"""
     normalized = code
     for p in ("sh", "sz", "SH", "SZ"):
         if normalized.startswith(p):
@@ -202,14 +248,14 @@ def get_money_flow(code: str, name: str = "") -> Optional[MoneyFlowData]:
         result = asyncio.run(_fetch())
 
         if result.get("code") != 200:
-            logger.error(f"资金流 API 返回错误: {result}")
+            logger.error(f"[EM] 资金流 API 返回错误: {result}")
             return None
 
         ref_list = result.get("data", {}).get("refIndexList", [])
         vals = _parse_markdown_tables(ref_list)
 
         if not vals:
-            logger.warning(f"未解析到资金流数据，code={code}")
+            logger.warning(f"[EM] 未解析到资金流数据: code={code}")
             return None
 
         return MoneyFlowData(
@@ -225,11 +271,12 @@ def get_money_flow(code: str, name: str = "") -> Optional[MoneyFlowData]:
             super_in=vals.get("超大单流入", 0.0),
             super_out=vals.get("超大单流出", 0.0),
             small_net=vals.get("小单净流入", 0.0),
+            mid_net=0.0,
             ddx=vals.get("DDX", 0.0),
             ddy=vals.get("DDY", 0.0),
             date="",
         )
 
     except Exception as e:
-        logger.error(f"获取资金流数据失败: {e}")
+        logger.error(f"[EM] 获取资金流数据异常: {e}")
         return None
