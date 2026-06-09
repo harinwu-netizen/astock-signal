@@ -219,6 +219,386 @@ python3 scripts/send_pending.py health   # 查看健康状态
 
 ---
 
+## v6.3（2026-06-03）⭐ 资金流妙查 fallback
+
+**主题：资金流三级 fallback + 妙查精确匹配修复**
+
+### 🔥 问题背景
+
+信号灯 `data_provider/money_flow.py` 资金流原有两级 fallback（东方财富 → QVeris），从 4 月起都失效，导致 7 只监控股票资金流**全部获取失败**。BUY/SELL 信号的"资金面"维度缺失或失真。
+
+**根因**：TOOLS.md 早在 5/22 就写了"改用妙查"，但**只用于小海的 000629 手动分析**，未回填到信号灯主流程。
+
+### 🛠 改造方案：三级 fallback
+
+```
+资金流查询
+  1️⃣ 东方财富(EM_API_KEY) — 大概率失败
+  2️⃣ QVeris/财达(QVERIS_API_KEY) — 偶发可用
+  3️⃣ 妙查(mx-finance-data) — 最后兑底(本次新增,实际 100% 成功)
+```
+
+### 📦 改动文件
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `data_provider/miaochang_money_flow.py` | 新建 | 封装妙查 subprocess 调用 + Excel 解析 |
+| `data_provider/money_flow.py` | 修改 | get_money_flow() 加 Step 3 妙查 fallback |
+
+### 🐛 关键 bug 修复
+
+**Bug 1: 妙查 description.txt 错配**
+- 现象：查 603683 晶华新材返回 000629 攀钢钦钛的数据
+- 原因：description 第 3 行 "查询内容:" 才是本次查询，Sheet 名是历史缓存也含 603683
+- 修复：精确匹配 "查询内容:" 行，避开 Sheet 名误扰
+
+**Bug 2: 妙查输出路径**
+- 现象：MX_OUTPUT_DIR 写绝对路径找不到文件
+- 原因：妙查脚本以 `cwd` 为基准，不是固定路径
+- 修复：MX_OUTPUT_DIR 改为相对路径 `miaoxiang/mx_finance_data`
+
+### ✅ 验证
+
+7/7 股票资金流全部获取成功：
+- 000629 攀钢钦钛：QVeris +563万 (与妙查交叉验证一致)
+- 603683 晶华新材：妙查 +4769万 (修复后正确)
+- 300308 中际旭创：QVeris +11384万
+- 002202 金风科技：QVeris +5145万
+- 002792 通宇通讯：QVeris +5232万
+- 002371 北方华创：QVeris +68918万
+- 688981 华虹半导体：妙查 0万 (资金平衡)
+
+### 🔄 保留 QVeris
+
+QVERIS_API_KEY 未来可能设置，所以保留在 fallback 链中。位置：东方财富之后、妙查之前。
+
+---
+
+## v6.5（2026-06-03）⭐ 扫描时段改为两段（跳午休）
+
+**主题：信号灯扫描时段从 09:15-15:05 改为 10:00-11:30 / 13:00-15:00**
+
+### 🔥 背景
+
+原扫描时段 `09:15-15:05` 覆盖全天（连续 5h50m）。但 11:30-13:00 是午休时间，A股无交易、API 返回脏数据，且信号系统在午休期间产生的 BUY/SELL 信号会误导用户。
+
+### 🛠 改造
+
+**改动文件**：`run_watch_daemon.sh`（`is_trading_hours()` 函数）
+
+**前后对比**：
+
+```
+旧（v6.4）:        09:15 ──────────── 15:05  （连续 5h50m）
+新（v6.5）:        10:00 ── 11:30 / 13:00 ── 15:00  （跳午休）
+```
+
+**实现**：
+
+```bash
+is_trading_hours() {
+    local now=$(date +%H%M)
+    if [ "$now" -ge "1000" ] && [ "$now" -lt "1130" ]; then return 0; fi  # 上午
+    if [ "$now" -ge "1300" ] && [ "$now" -lt "1500" ]; then return 0; fi  # 下午
+    return 1
+}
+```
+
+### 📦 副作用
+
+- 守护脚本 `is_trading_hours()` 改了两处时间常量（0915→1000，新增 1130/1300 边界）
+- **午休时段会杀进程**（下次 cron 触发 13:00 时重启）
+- 日志中间会出现 1.5h 静默期
+
+### ✅ 验证
+
+- 上午段 10:00-11:30：进程正常扫描
+- 11:30 后：进程被杀、PIDFILE 清理
+- 13:00 重启：进程正常运行
+- 15:00 后：再次清理
+
+---
+
+## v6.4.1（2026-06-03 23:19） · 守护脚本 PID 修复
+
+**主题：守护脚本 `$!` PID 错位 bug**
+
+### 🐛 Bug
+
+守护脚本用 `nohup` 或 `setsid` 启动 python3 进程时：
+
+- `$!` 拿到的是 wrapper 进程（nohup/setsid）的 PID
+- 不是 python3 真实 PID
+- 杀进程时杀的是 wrapper，python3 被 systemd 收养继续跑
+- 现象：看起来"杀掉了"，实际还活着，**资源泄漏**
+
+### 🔧 修复
+
+用裸 `python3 main.py watch --continuous &` 启动，`$!` 直接拿 python3 真实 PID。
+
+**测试**：
+
+- 23:18 启动 → 实际 PID 552700
+- 23:19 守护脚本杀掉 → ✅ 干净退出
+
+---
+
+## v6.4（2026-06-03 23:14）⭐ 守护脚本去 flock + 节假日判断
+
+**主题：彻底重写守护脚本 `run_watch_daemon.sh`**
+
+### 🔥 问题背景
+
+原守护脚本用 `flock -xn` 启动 `nohup` 进程，**严重 bug**：
+
+| Bug | 现象 |
+|-----|------|
+| **fd 泄漏** | nohup 子进程继承 flock 的 fd，锁永不释放 |
+| **守护脚本死锁** | 后续 cron 触发 flock 立即失败，守护脚本形同虚设 |
+| **15:05 后不杀进程** | 进程靠 `main.py` 内部 self-loop 维持，守护脚本杀不掉 |
+| **日志污染** | 15:10 之后 8 小时空跑，约 150 次无效 API 调用 |
+
+### 🛠 改造
+
+| 改造点 | 实现 |
+|--------|------|
+| **去 flock** | 改用 PIDFILE 单点判活 |
+| **节假日判断** | 内置 2026 年部分法定节假日（元旦/春节/清明/劳动节/端午/中秋/国庆） |
+| **非交易时间杀进程** | 每天 15:00 后清场 |
+| **日切换保护** | 09:15 每天重启一次，避免长跑内存泄漏 |
+| **进程判活** | `kill -0 $PID`（不真杀，只检测） |
+
+### 📦 新增/改动文件
+
+| 文件 | 变更 |
+|------|------|
+| `run_watch_daemon.sh` | v3 → v6.4 整体重写，109 行 |
+| `backup/run_watch_daemon_pre_fix_20260603.sh` | 新增，旧版备份 |
+
+### 🔄 Cron 触发逻辑
+
+```
+每 5 分钟触发
+  ↓
+is_trading_day()?
+  ├─ 否（周末/节假日）→ 杀掉现存进程，退出
+  └─ 是
+       ↓
+is_trading_hours()?
+  ├─ 否（非交易时间）→ 杀掉现存进程，清理 PIDFILE
+  └─ 是
+       ↓
+PIDFILE 存在且 kill -0 成功?
+  ├─ 是 → 啥也不做
+  └─ 否 → 启动 python3 main.py watch --continuous &
+```
+
+### ✅ 验证
+
+| 时间 | 行为 | 结果 |
+|------|------|------|
+| 23:14 手动跑 | 识别"进程活着"+"非交易时间" | ✅ 杀进程+清理 PIDFILE |
+| 改动前 | 15:10 之后 8 小时空跑 | ~150 次无效 API |
+| 改动后 | 15:00 后立即停止 | 0 次无效调用 |
+
+---
+
+
+## v6.8 (2026-06-04 17:36) · 资金流 fallback 剔除 QVeris
+
+**主题**: 资金流数据源从三级 fallback 简化为二级 (剔除 QVeris/财达)
+
+### 🔥 问题背景
+
+近 30 天 QVeris/财达调用记录:
+- 成功 6 次
+- 失败 611 次
+- 成功率 0.97%
+
+**根因**:
+- `QVERIS_API_KEY` 从未在 `.env` 中设置
+- 每次调用都打 "QVERIS_API_KEY 未设置" log
+- 100% 失败后 fallback 到下一级
+- 6 次成功是 6/2 之前某段时间有临时 key 进了日志
+- MEMORY.md 记 "4 月起欠费" 实际是误判
+
+### 🛠 改造
+
+`data_provider/money_flow.py`:
+- 删除 `from data_provider.qveris_money_flow import get_money_flow_via_qveris`
+- 删除 Step 2 QVeris fallback block (25 行)
+- docstring 从 "三级 fallback" 改为 "两级 fallback"
+- 改 QVeris 相关 log 为 "妙想数据"
+
+**保留文件** (不删):
+- `data_provider/qveris_money_flow.py` (不改, 避免 git diff 噪音)
+
+### 🔄 新 fallback 链
+
+```
+get_money_flow(code)
+  1. 东方财富 (assistant/ask 端点) ← 主力
+  2. 妙想数据 (searchData 端点)     ← v6.3 fallback
+```
+
+### ✅ 验证 (2026-06-04 18:35)
+
+- Python 语法 OK
+- get_money_flow 导入成功
+- 实际调用 000629 返回: 主力净流入=-3732万, DDX=-0.119
+- 调用耗时 ~5 秒/只 (正常)
+- 调用走 assistant/ask 端点 (成功)
+
+### 📈 收益
+
+- 每次扫描减少 ~100ms 延迟 (省去 QVeris HTTPX 调用)
+- fallback 链减少 1 层, 调试更简单
+- MEMORY.md 误判 "4 月起欠费" 纠正为 "QVERIS_API_KEY 从未设置"
+
+
+## v6.9 (2026-06-04 23:50) · push2delay 集成到资金流 fallback
+
+**主题**: 资金流 fallback 链新增 Step 0 (push2delay 公开端点, 免费, 几乎不限流)
+
+### 🔥 问题背景
+
+信号灯"东方财富"(assistant/ask) + 妙想数据(mx-finance-data) 共用同一 EM_API_KEY 限额 ~60次/日.
+- 6/4 10:40 触限后全天 403
+- 全天 309 次调用, 237 次失败 (77% 失败率)
+
+**新发现**: 东方财富 push2delay 端点 (`/api/qt/stock/fflow/daykline/get`)
+- 公开 15 分钟延迟行情数据, 无需 key
+- 几乎不限流
+
+### 🛠 改造
+
+新增 `scripts/fund_flow_api.py` (v6.6.1, 7.2KB)
+- 函数 `fetch_public_flow(code, market)` → 返回 `dict` 含 main_net/big_net/super_net/mid_net/small_net (单位: 万元)
+- 不提供 main_in/out, big_in/out, super_in/out, ddx, ddy (填 0.0)
+- 字段对齐 `MoneyFlowData`
+
+`data_provider/money_flow.py` 加 Step 0 块:
+- `import fund_flow_api` (sys.path 加 scripts/)
+- `_HAS_PUSH2DELAY` (import 成功标志) + `USE_PUSH2DELAY` (env 开关)
+- `.env` 加 `FUND_FLOW_BACKEND=push2delay` 开关 (默认 False, 海赟可选启用)
+- Step 0 块: 调用 `fetch_public_flow(code)` → 映射到 `MoneyFlowData` → 返回
+
+**集成链路**:
+```
+1. 东方财富 (assistant/ask) ← 主力
+2. 妙想数据 (mx-finance-data)  ← v6.3 fallback
+   (push2delay 现在是 v6.9 Step 0, 但默认未启用, 海赟 .env 开关)
+```
+
+### ✅ 验证 (2026-06-04 23:50)
+
+- Python 语法 OK
+- import 链路 OK (`_HAS_PUSH2DELAY=True`)
+- dotenv 加载后 `USE_PUSH2DELAY=True`
+- 实际调用 000629: log `[MoneyFlow] push2delay 成功: 主力净流入=-3732万`
+- 字段: main_net=-3731.61万, big_net=-1666.03万, super_net=-2065.59万, mid_net=-1332.51万, small_net=5064.12万 ✓
+
+### 🔧 实施踩坑
+
+- ❌ 直接 `python3 -c` 测试 → 没加载 dotenv → USE_PUSH2DELAY=False → 跑 Step 1
+- ✅ `load_dotenv()` 模拟真实环境 → USE_PUSH2DELAY=True → Step 0 数据正确
+- 信号灯主流程经 main.py → config.setup_env() → dotenv 自动加载 → Step 0 启用
+
+### 📈 收益
+
+- 即使 assistant/ask + mx-finance-data 都限流, 资金流仍能拿到
+- 不消耗 EM_API_KEY 配额
+- 明早 6/5 10:00 信号灯第一次扫描就生效
+
+### ⚠️ 局限
+
+- push2delay 仅返回**当日数据** (不能拿 5/10 日 DDX 历史)
+- 15 分钟延迟 (盘后能拿到收盘数据)
+
+---
+
+## v6.6.2 (2026-06-05 13:12) · outbox 守护进程日志去重
+
+**主题**: 修复 outbox_daemon.py 启动后日志每行重复输出 2 次的 bug
+
+### 🐛 根因
+
+`start()` 函数 `os.fork()` 后用 `os.dup2()` 把子进程的 `stderr` 重定向到日志文件 (`LOG_FILE`)。
+但 logging 的 `StreamHandler()` 默认绑 `sys.stderr`,结果:
+- `RotatingFileHandler` 写一次 → 1 行
+- `StreamHandler` 写 stderr → stderr 已 dup 到同一日志文件 → 又写 1 行
+- 同一行被写 2 次 (连毫秒都一样)
+
+### 🛠 修复
+
+`scripts/outbox_daemon.py` 第 76-90 行:
+- 去掉 `StreamHandler()`, 只保留 `RotatingFileHandler`
+- 给 `outbox-daemon` 子 logger 显式 `addHandler` + `setLevel(INFO)` + `propagate=False`
+- 不再依赖 `basicConfig` (因为它绑 root, 受子进程 dup 干扰)
+
+### ✅ 验证
+
+- v6.6.1 备份: `logs/outbox_daemon.v6.6.1.log.bak` (7568 字节, 71 行)
+- 重启后: `logs/outbox_daemon.log` 空 → 启动后无任何重复
+- 待 13:20 信号灯扫描验证一次完整流程
+
+**重启记录**:
+- 旧 PID 827073 (v6.6.1, 启动 20h36m)
+- 新 PID 1311625 (v6.6.2, 2026-06-05 13:12:18 启动)
+
+---
+
+
+
+---
+
+## v6.6.3 (2026-06-05 17:08) · 飞书报告添加资金流字段
+
+**主题**: 修复 `feishu.py:send_signal_report` 未输出资金流字段的 bug
+
+### 🐛 根因
+
+`analyze_unified` (signal_unified.py:349) 成功获取了 `mf_data` (含 push2delay 真实数据) 并存进 `signal.money_flow`。
+但 `feishu.py:send_signal_report` 渲染循环 (138-147 行) 只输出了价格/买点/卖点/决策,**完全没读 `s.money_flow` 字段**。
+
+结果: 6/5 全天 18 次扫描, 资金流 100% 拿到 (0 失败), 但飞书报告里**零资金流数据**, 用户看不到。
+
+### 🛠 修复
+
+`notification/feishu.py` 在"卖点"和"决策"之间插入资金流字段:
+
+```python
+if hasattr(s, 'money_flow') and s.money_flow:
+    mf = s.money_flow
+    mf_icon = "🟢" if mf.main_net > 0 else "🔴"
+    ddx_str = f" DDX{mf.ddx:+.3f}" if mf.ddx else ""
+    lines.append(
+        f"   资金: {mf_icon} 主力{mf.main_net:+.0f}万 "
+        f"大单{mf.big_net:+.0f}万 超大单{mf.super_net:+.0f}万{ddx_str}"
+    )
+```
+
+### ✅ 验证 (2026-06-05 17:07, 模拟渲染 7 只池子, push2delay 真实数据)
+
+- 000629 攀钢钒钛: 主力 -1527万 / 大单 -1152万 / 超大单 -374万 🔴
+- 603683 晶华新材: 主力 +11111万 / 大单 -2454万 / 超大单 +13564万 🟢
+- 300308 中际旭创: 主力 -638072万 / 大单 -41631万 / 超大单 -596440万 🔴
+- 002202 金风科技: 主力 -17476万 / 大单 -3545万 / 超大单 -13931万 🔴
+- 002792 通宇通讯: 主力 +13377万 / 大单 +8576万 / 超大单 +4801万 🟢
+- 002371 北方华创: 主力 -36128万 / 大单 -8023万 / 超大单 -28106万 🔴
+- 688981 华虹半导体: 主力 -134704万 / 大单 -41670万 / 超大单 -93034万 🔴
+
+### ⚠️ 后续考虑 (v6.6.4+)
+
+中盘股/大盘股数字绝对值差异大, 可考虑自动按绝对值切换"万/亿"单位 (>=10000万 → 显示"X.XX亿")。
+是显示美观问题, 非数据正确性问题, 待海赟决策。
+
+### 🛑 不需重启
+
+信号灯运行时通过 `from notification.feishu import ...` 动态 import 渲染代码。
+- 下次信号灯扫描 (6/8 10:00) 自动生效
+- 守护进程 outbox_daemon.py 不需重启
+
 ## v5.8 （2026-04-27）
 
 **主题：基于P4回测结果的针对性优化（震荡市/弱市过滤）**

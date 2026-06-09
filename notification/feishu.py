@@ -143,6 +143,15 @@ class FeishuNotifier:
             if hasattr(s, 'sell_signals_detail') and s.sell_signals_detail:
                 detail = "、".join([f"⚠️{x}" for x in s.sell_signals_detail[:3]])
                 lines.append(f"   卖点: {detail}")
+            # v6.6.3 资金流字段 (修复: 此前 money_flow 拿到但没输出到报告)
+            if hasattr(s, 'money_flow') and s.money_flow:
+                mf = s.money_flow
+                mf_icon = "🟢" if mf.main_net > 0 else "🔴"
+                ddx_str = f" DDX{mf.ddx:+.3f}" if mf.ddx else ""
+                lines.append(
+                    f"   资金: {mf_icon} 主力{mf.main_net:+.0f}万 "
+                    f"大单{mf.big_net:+.0f}万 超大单{mf.super_net:+.0f}万{ddx_str}"
+                )
             decision_desc = {
                 "BUY": "🟢 买入",
                 "HOLD": "🟡 持有",

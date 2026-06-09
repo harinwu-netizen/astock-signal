@@ -56,6 +56,7 @@ class UnifiedSignal:
     ma5: float = 0.0
     ma10: float = 0.0
     ma20: float = 0.0
+    market_change_pct: float = 0.0
 
     # 资金流数据（可选，失败时为 None）
     money_flow: Optional[MoneyFlowData] = None
@@ -198,6 +199,7 @@ def analyze_unified(
             code=realtime.get("code", ""),
             name=realtime.get("name", ""),
             price=realtime.get("price", 0),
+            market_change_pct=realtime.get("market_change_pct", 0),
         )
 
     code = realtime.get("code", "")
@@ -343,6 +345,7 @@ def analyze_unified(
         ma5=strong_sig.ma5 if strong_sig else 0.0,
         ma10=strong_sig.ma10 if strong_sig else 0.0,
         ma20=cons_sig.bb_middle if cons_sig else 0.0,
+        market_change_pct=realtime.get("market_change_pct", 0),
         money_flow=mf_data,
     )
 

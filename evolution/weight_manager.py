@@ -264,10 +264,29 @@ def confirm_and_apply_suggestion() -> bool:
 def reject_suggestion():
     """海赟拒绝调整建议，保持当前权重"""
     state = _load_cycle_state()
+    rejected_version = state.get("pending_weight_version")  # e.g. "W2"
     state["current_phase"] = "learning"
     state["pending_suggestion"] = None
     state["pending_weight_version"] = None
     _save_cycle_state(state)
+
+    # 同步更新 weight_history，将对应版本标记为 rejected
+    if rejected_version:
+        try:
+            history = []
+            if os.path.exists(WEIGHT_HISTORY_FILE):
+                with open(WEIGHT_HISTORY_FILE, "r", encoding="utf-8") as f:
+                    history = json.load(f)
+            for entry in history:
+                if entry.get("version") == rejected_version:
+                    entry["status"] = "rejected"
+                    entry["rejected_at"] = datetime.now().isoformat()
+            with open(WEIGHT_HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+            logger.info(f"[Evolution/Weight] weight_history 中 {rejected_version} 已标记为 rejected")
+        except Exception as e:
+            logger.error(f"[Evolution/Weight] 更新 weight_history 失败: {e}")
+
     logger.info("[Evolution/Weight] 建议已拒绝，保持当前权重")
 
 

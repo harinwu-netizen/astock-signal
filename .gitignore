@@ -47,3 +47,21 @@ htmlcov/
 # 本地文件
 *.local
 *.bak
+
+# 运行时数据 (不提交)
+# outbox 守护目录
+data/outbox/
+# 归档
+data/archive/
+# 回测结果
+data/backtest_results/
+# 推送健康状态
+data/send_health.json
+# 告警标志
+data/alert_needed.flag
+# mx-finance-data 输出 (cwd 依赖)
+miaoxiang/
+# 自进化运行时统计
+evolution/signal_stats.json
+# 逆流池 (MEMORY.md 约定 - 未完工不动)
+stock_pool/

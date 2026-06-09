@@ -14,6 +14,7 @@
     "suggested_at": "2026-04-27T20:00:00",
     "confirmed_at": "2026-04-27T22:32:01.450044",
     "cycle": 1,
-    "status": "verifying"
+    "status": "rejected",
+    "rejected_at": "2026-04-28T21:00:16.834672"
   }
 ]
