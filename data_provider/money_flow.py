@@ -1,25 +1,49 @@
 """
 资金流数据获取器
 使用东方财富 EM_API_KEY 获取主力资金流数据
-东方财富超限后自动切换 QVeris/财达 作为 fallback
+东方财富超限后自动切换 妙想数据(mx-finance-data) 作为 fallback
+v6.8 (2026-06-04): 剔除 QVeris/财达 (QVERIS_API_KEY 从未设置, 100% 失败)
+v6.9 (2026-06-04): push2delay 公开端点作为 Step 0 (免费, 几乎不限流)
+v6.10 (2026-06-09): 修复 setup_env() 未在模块加载时调用导致 USE_PUSH2DELAY 始终为 False
 """
 import asyncio
 import logging
 import os
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import httpx
+
+# v6.10: 必须在 import 阶段加载 .env, 否则模块级 os.environ.get() 拿不到值
+# 原因: money_flow.py 会在 import 时执行 USE_PUSH2DELAY 赋值,
+# 此时 Config.load() 还没被调用, .env 也未加载
+from config import setup_env
+setup_env()
 
 logger = logging.getLogger("MoneyFlow")
 
 API_URL = "https://ai-saas.eastmoney.com/proxy/app-robo-advisor-api/assistant/ask"
 API_KEY = os.environ.get("EM_API_KEY", "")
 
-# QVeris fallback
-from data_provider.qveris_money_flow import get_money_flow_via_qveris
-# 妙查 fallback (v6.3,2026-06-03)
+# 妙查 fallback (v6.3,2026-06-03) - v6.8 简化掉 QVeris
 from data_provider.miaochang_money_flow import get_money_flow_via_miaochang
+
+# v6.9: push2delay 公开端点 (免费, 几乎不限流)
+# 脚本位置: ~/.openclaw/workspace/scripts/fund_flow_api.py
+_SCRIPTS_DIR = Path.home() / ".openclaw" / "workspace" / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+try:
+    from fund_flow_api import fetch_public_flow
+    _HAS_PUSH2DELAY = True
+except ImportError as e:
+    logger.warning(f"[MoneyFlow] push2delay 模块导入失败: {e}")
+    _HAS_PUSH2DELAY = False
+
+# .env 开关: FUND_FLOW_BACKEND=push2delay 启用 Step 0
+USE_PUSH2DELAY = os.environ.get("FUND_FLOW_BACKEND", "").lower() in ("push2delay", "public", "1", "true", "yes")
 
 
 @dataclass
@@ -148,10 +172,11 @@ def _parse_markdown_tables(refs: List[dict]) -> Dict[str, float]:
 
 def get_money_flow(code: str, name: str = "") -> Optional[MoneyFlowData]:
     """
-    获取单只股票资金流数据（三级 fallback）
+    获取单只股票资金流数据（两级 fallback，v6.8 简化）
     1. 东方财富(EM_API_KEY) — 优先
-    2. QVeris/财达 — 备选
-    3. 妙查(mx-finance-data) — 最后备选(2026-06-03 新增)
+    2. 妙想数据(mx-finance-data) — 备选 (v6.3 新增)
+
+    v6.8: 剔除 QVeris/财达 (100% 失败, QVERIS_API_KEY 从未配置)
 
     Args:
         code: 股票代码，如 "000629"
@@ -160,41 +185,46 @@ def get_money_flow(code: str, name: str = "") -> Optional[MoneyFlowData]:
     Returns:
         MoneyFlowData 或 None（失败时）
     """
+    # ===== Step 0: push2delay 公开端点 (v6.9,2026-06-04) =====
+    # 免费, 几乎不限流, 作为最高优先级 fallback
+    # 启用条件: .env 设 FUND_FLOW_BACKEND=push2delay (默认未启用)
+    if USE_PUSH2DELAY and _HAS_PUSH2DELAY:
+        try:
+            pub_data = fetch_public_flow(code, name)
+            if pub_data:
+                logger.info(f"[MoneyFlow] push2delay 成功: 主力净流入={pub_data['main_net']:+.0f}万")
+                return MoneyFlowData(
+                    code=pub_data["code"],
+                    name=pub_data["name"],
+                    main_net=pub_data["main_net"],
+                    main_in=0.0,        # push2delay 不提供此字段
+                    main_out=0.0,
+                    big_net=pub_data["big_net"],
+                    big_in=0.0,
+                    big_out=0.0,
+                    super_net=pub_data["super_net"],
+                    super_in=0.0,
+                    super_out=0.0,
+                    small_net=pub_data["small_net"],
+                    mid_net=pub_data["mid_net"],
+                    ddx=0.0,             # push2delay 不提供此字段
+                    ddy=0.0,
+                    date=pub_data["date"],
+                )
+        except Exception as e:
+            logger.warning(f"[MoneyFlow] push2delay 失败: {e}")
+
     # ===== Step 1: 尝试东方财富 =====
     if API_KEY:
         result = _get_money_flow_eastmoney(code, name)
         if result is not None:
             return result
 
-    # ===== Step 2: Fallback — QVeris/财达 =====
-    logger.info("[MoneyFlow] 东方财富不可用，尝试 QVeris/财达...")
-    qveris_data = get_money_flow_via_qveris(code, name)
-    if qveris_data:
-        logger.info(f"[MoneyFlow] QVeris/财达获取成功: 主力净流入={qveris_data['main_net']:.0f}万")
-        return MoneyFlowData(
-            code=qveris_data["code"],
-            name=qveris_data["name"],
-            main_net=qveris_data["main_net"],
-            main_in=qveris_data["main_in"],
-            main_out=qveris_data["main_out"],
-            big_net=qveris_data["big_net"],
-            big_in=qveris_data["big_in"],
-            big_out=qveris_data["big_out"],
-            super_net=qveris_data["super_net"],
-            super_in=qveris_data["super_in"],
-            super_out=qveris_data["super_out"],
-            small_net=qveris_data["small_net"],
-            mid_net=qveris_data.get("mid_net", 0.0),
-            ddx=qveris_data["ddx"],
-            ddy=qveris_data["ddy"],
-            date=qveris_data["date"],
-        )
-
-    # ===== Step 3: Fallback — 妙查 (v6.3,2026-06-03) =====
-    logger.info("[MoneyFlow] QVeris/财达不可用，尝试妙查...")
+    # ===== Step 2: Fallback — 妙想数据 (v6.3,2026-06-03) =====
+    logger.info("[MoneyFlow] 东方财富不可用，尝试妙想数据(mx-finance-data)...")
     mc_data = get_money_flow_via_miaochang(code, name)
     if mc_data:
-        logger.info(f"[MoneyFlow] 妙查获取成功: 主力净流入={mc_data['main_net']:.0f}万")
+        logger.info(f"[MoneyFlow] 妙想数据获取成功: 主力净流入={mc_data['main_net']:.0f}万")
         return MoneyFlowData(
             code=mc_data["code"],
             name=mc_data["name"],
