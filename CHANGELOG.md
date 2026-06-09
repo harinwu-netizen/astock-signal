@@ -1414,3 +1414,154 @@ WIN_RATE_WEIGHT=0.6        # 胜率在排序中的权重
 - `config.py` — 新增仓位分档参数
 - `backtest/multi_engine.py` —胜率追踪 + 综合打分 + 仓位分档
 
+
+
+## v6.10 (2026-06-09 20:55) · 修复 push2delay 模块加载未生效 bug ⭐ 关键修复
+
+**主题**: 修复 v6.9 push2delay 集成后，**实际从未生效**的根因
+
+### 🐛 Bug 现象
+
+v6.9 (2026-06-04 23:50) 改造时，预期配置 `.env` 的 `FUND_FLOW_BACKEND=push2delay` 后信号灯会走 push2delay 端点。
+但实际**今天 (6/9) 整整一天的扫描日志里完全没有 `[MoneyFlow] push2delay` 调用记录**——所有资金流都走"东方财富 → 妙想 fallback"。
+
+### 🔍 根因
+
+`data_provider/money_flow.py` 顶部**模块级**赋值：
+```python
+USE_PUSH2DELAY = os.environ.get("FUND_FLOW_BACKEND", "").lower() in (...)
+```
+
+但 `os.environ` 在 **import 阶段**还没加载 `.env`：
+- `setup_env()` 只在 `Config.load()` 内部调用
+- `Config.load()` 在 watch 命令**运行时**才执行
+- `money_flow.py` 的 `USE_PUSH2DELAY = ...` 在 `import` 时**早于** `Config.load()`
+
+→ `USE_PUSH2DELAY` 永远是 `False`，Step 0 块被短路。
+
+### 🛠 修复
+
+`data_provider/money_flow.py` 顶部加 2 行：
+```python
+from config import setup_env
+setup_env()  # 在 import 阶段加载 .env
+```
+
+**为什么 v6.7 改 `WATCH_INTERVAL=900` 生效？** — 因为 v6.7 只改 `.env`，`WATCH_INTERVAL` 在 `Config.load()` 内部 `os.getenv()` 运行时读，**晚于** setup_env。v6.9 改的 `FUND_FLOW_BACKEND` 走**模块级** `os.environ.get()`，**早于** setup_env → 永远拿不到值。
+
+### ✅ 验证
+
+| 测试 | 结果 |
+|------|------|
+| 删 .pyc 后仅 import money_flow | `USE_PUSH2DELAY = True` ✅ |
+| import signal_unified (触发 money_flow 二次 import) | `USE_PUSH2DELAY = True` ✅ |
+| 7 只股票全量 (000629/603683/300308/002202/002792/002371/688981) | 7/7 拿到 push2delay 真实数据 ✅ |
+
+### 📅 生效
+
+- **06-10 09:15** 守护脚本日切换杀进程 → 启动新 watch → 加载 v6.10 → `USE_PUSH2DELAY=True`
+- **06-10 10:00** 第一次扫描, 预期 `watch_cron.log` 出现 `[MoneyFlow] push2delay 成功`
+
+### 💡 教训 (给小海)
+
+- 未来 .env 变量想"模块级"用：必须保证 import 阶段 setup_env 先执行 (A2 模式)
+- 未来 .env 变量想"运行时"用：保持 `Config.load()` 内 `os.getenv()` 即可
+- 不要从"工具失败"推论"权限/路径问题"——先做最小端到端复现验证
+
+
+## v6.11 (2026-06-09 21:06) · 000629 每日采集切换 push2delay + txstock ⭐ 关键修复
+
+**主题**: 解决 000629 每日 16:30 自动采集连续 5 天 妙查 403 失败
+
+### 🐛 问题
+
+`scripts/collect_000629.py` 走 `mx-finance-data` skill 调妙查 API，妙查自 6/4 起持续 403（"使用次数已达上限"），截至 6/9 已连续 5 个交易日失败。
+- 16:30 cron 失败 → 不写 outbox
+- 16:35 人工盘点 → 手写 `alert_000629_Nday_fail.json` 推送
+
+### 🛠 改造
+
+`scripts/collect_000629.py` 新增多源采集：
+
+| 数据 | 来源 | 说明 |
+|------|------|------|
+| 资金流 (主力/超大/大单/中单/小单) | **push2delay** | 免费, 几乎不限流 |
+| 行情 (开/高/低/昨收/收盘/涨幅) | **txstock (腾讯)** | 免费, 含昨收 |
+| DDX/DDY (1/3/5/10 日) | **N/A** | push2delay 不提供, 无替代源 |
+
+新增函数：
+- `fetch_push2delay_data()` — 拉资金流, 字段映射到妙查命名 (主力净流入/超大单净额/...)
+- `fetch_txstock_data()` — 拉行情, 用 `TxStock().get_realtime()`
+- `fetch_000629_data()` — 多源合并, 优先级 push2delay + txstock
+- `main()` 加 `--source` 参数: `multi` (默认) / `push2delay` / `txstock` / `miaochang` (旧版)
+
+### 🐛 顺带修 outbox 切分 bug
+
+原代码 `log.split("---")[0].strip()` 切到 markdown 表格分隔符 `|---|---|` 就停了，导致 outbox 内容**只有表格头**（~58 字符）。
+
+修复：`log.split("\n\n---")[0].strip()` — 切到正文章节分隔符 (line 29 的 `---`)，保留完整内容 (~377 字符)。
+
+### ✅ 验证
+
+| 测试 | 结果 |
+|------|------|
+| push2delay + txstock 联合 | 18 字段 (含 4 个 DDX N/A) ✅ |
+| 仅 push2delay 失败 | txstock 仍能拿 6 字段, 不抛错 ✅ |
+| 双源失败 | 优雅返回 error, `main()` 正常 `sys.exit(1)` ✅ |
+| dry-run + 真实写文件 | memory + outbox 内容完整 ✅ |
+
+### 📅 生效
+
+- **06-10 16:30** collect_000629 cron 第一次跑 v6.11, 预期成功推 `ftqq_daily` 到海赟私聊
+- **06-10 16:35** 不会再触发 5day_fail (因为不再失败)
+- 妙查 `fetch_miaochang_data()` 保留为 `--source miaochang` fallback
+
+### 📦 配套改动
+
+- `.gitignore` 补 8 条规则 (data/outbox/ / data/archive/ / miaoxiang/ / stock_pool/ 等)
+- ⚠️ 抓到一个 `.gitignore` 行尾注释 bug：规则行尾写 `# 注释` 会被 git 当成规则一部分，必须独立行才生效 (已修复)
+- git commits: `0e3021d` (v6.8-11 主修复) + `045800c` (chore 批量补) + push 到 origin/main (e1c09a5..045800c, 7 commits)
+
+
+## v6.6.1 (2026-06-04 23:28) · push2delay 资金流独立工具 ⭐ 关键里程碑
+
+**主题**: 在 v6.9 集成到信号灯之前, 先把 push2delay 抽成独立工具 (`scripts/fund_flow_api.py`)
+
+### 🔥 问题背景
+
+信号灯 fallback 链 (东方财富 assistant/ask + 妙想 searchData) 共用 EM_API_KEY, ~60次/日
+- 6/4 10:40 触限后全天 403
+- 全天 309 次调用, 237 次失败 (77%)
+
+### 🌟 新发现 (2026-06-04 23:00)
+
+东方财富 push2delay 端点: `https://push2delay.eastmoney.com/api/qt/stock/fflow/daykline/get`
+- **几乎不限流** (公开 15 分钟延迟行情)
+- **无需 API key** / 无 OAuth
+- 仅当日数据 (不能拿 5/10 日 DDX 历史)
+- 端点稳定, 适合作为"几乎免费"资金流 fallback
+
+### 🛠 实施 (海赟选 A 方案: 独立工具)
+
+新增 `scripts/fund_flow_api.py` (7.2KB)
+- 封装 `fetch_public_flow(code, market)` → 返回 dict
+  - `main_net / big_net / super_net / mid_net / small_net` (单位: 万元)
+  - `main_pct / big_pct / super_pct` (主力/大单/超大单 占比%)
+  - `close / change_pct / date`
+  - `ddx / ddy` 推算指标 (填 0.0)
+- 封装 `get_money_flow_batch(codes)` 批量接口
+- CLI: `--test / --health / --batch` 三个子命令
+- 字段对齐 `MoneyFlowData`
+
+### ✅ 验证 (2026-06-04 23:28)
+
+- 7/7 股票成功
+- 000629 主力净流入=-3731.6万
+- 002371 北方华创 主力净流入=+44142万
+- 端点响应时间 ~800ms (东方财富端)
+
+### 📅 下一步
+
+- v6.9 (23:50) 将 push2delay 集成到 `data_provider/money_flow.py` 作为 Step 0
+- v6.10 (6/9) 修复 v6.9 集成的 setup_env 时机 bug
+- v6.11 (6/9) 同样接入 `collect_000629.py`
