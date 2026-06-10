@@ -1565,3 +1565,69 @@ setup_env()  # 在 import 阶段加载 .env
 - v6.9 (23:50) 将 push2delay 集成到 `data_provider/money_flow.py` 作为 Step 0
 - v6.10 (6/9) 修复 v6.9 集成的 setup_env 时机 bug
 - v6.11 (6/9) 同样接入 `collect_000629.py`
+
+---
+
+## v6.12 (2026-06-10 21:05) · 资金流 15 分钟缓存 + push2delay 健康探测 + 妙查 403 退避 ⭐ 关键优化
+
+**主题**: 解决 6/10 资金流 fallback 链"全天 49 次失败"的三大根因
+
+### 🐛 问题
+
+- 6/10 早盘 push2delay 端点挂了 (rc:100/102 data:null) → fallthrough 到妙查
+- 妙查日配额 ~100 次, 14 次扫描 × 7 只 = 98 次, **完美卡限**
+- 13:00 开盘后妙查 403 触限 → **全天 49 次资金流全失败** (13:00-15:00)
+- 14:01 北方华创主力净流入仅 +2 万, 数字严重偏离
+
+### 🛠 三层改进
+
+#### 1. 15 分钟缓存 (每只股票独立)
+- 路径: `data_provider/money_flow.py` 加 `_cache: Dict[str, tuple]`
+- 粒度: 每只股票单独缓存 (`code → (timestamp, MoneyFlowData)`)
+- 失效: 15 分钟 (CACHE_TTL_SECONDS=900)
+- 范围: **所有路径都缓存** (push2delay / 东财 / 妙查)
+- 效果: 5 分钟扫描时, 7 只股票在 15 分钟内复用同一份数据 → 全天妙查调用从 98 → ~32 次
+
+#### 2. push2delay 端点健康探测
+- 新增 `_is_push2healthy()` 函数
+- 5 分钟内复用同一健康状态 (PUSH2_HEALTH_CHECK_TTL=300)
+- 探活用 `secid=0.000001` (沪指) - 不消耗业务数据配额
+- 端点挂时直接跳过 Step 0, fallthrough 到东财/妙查
+- 避免每天重启 14 次都探测一次 (节省 13 次探测请求)
+
+#### 3. 妙查 403 退避 30 分钟
+- 新增 `_mc_blocked_until` 时间戳
+- 妙查失败时设置 `now + MC_BACKOFF_SECONDS(1800)`
+- 退避期内直接跳过 Step 2, 用之前缓存的结果
+- 成功时清退避 (`_mc_blocked_until = 0.0`)
+
+### 🐛 v6.11 改造过程中的两个 bug (海赟中途暂停前修完)
+
+1. **缓存写入位置错误**: `_cache[code] = ...` 写在了 `return MoneyFlowData(...)` 之后 (return 多行表达式闭合之后), 实际是死代码
+   - 修复: 把 `return MoneyFlowData(...)` 改成 `result = MoneyFlowData(...)` + `_cache[code] = (now, result)` + `return result`
+2. **第一次 edit 拼写错误**: `big_out=mc_data["big_in"]` 应该是 `big_out=mc_data["big_out"]`
+   - 在后续 edit 中已纠正
+
+### ✅ 验证
+
+| 场景 | 结果 |
+|------|------|
+| 首次 000629 (push2delay 路径) | main_net=-1730万 耗时 0.30s ✅ |
+| 二次 000629 (缓存命中) | main_net=-1730万 耗时 **0.01ms** ✅ |
+| push2delay 模拟挂 (健康=False) | 自动走妙查 ✅ |
+| 妙查 403 模拟 (退避中) | 用之前缓存, 0 耗时 ✅ |
+
+### 📅 生效
+
+- 2026-06-11 10:00 信号灯日切换, 新 watch 进程加载 v6.12
+- 预期: 资金流全天稳定 (push2delay 健康即用, 不健康 fallthrough, 妙查退避兜底)
+- 预期: 妙查日调用从 ~98 → ~14 次 (15 分钟内全缓存)
+
+### 🔧 配置变化
+
+`.env`:
+```diff
+- # FUND_FLOW_BACKEND=push2delay  # 2026-06-10 端点整体不可用,临时禁用
++ FUND_FLOW_BACKEND=push2delay  # v6.11 重新启用,端点 15:35 已恢复,加健康探测自动跳过挂的状态
+```
+

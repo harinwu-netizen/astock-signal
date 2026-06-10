@@ -5,11 +5,16 @@
 v6.8 (2026-06-04): 剔除 QVeris/财达 (QVERIS_API_KEY 从未设置, 100% 失败)
 v6.9 (2026-06-04): push2delay 公开端点作为 Step 0 (免费, 几乎不限流)
 v6.10 (2026-06-09): 修复 setup_env() 未在模块加载时调用导致 USE_PUSH2DELAY 始终为 False
+v6.11 (2026-06-10): 妙查 15 分钟缓存(7只股票各取各的)+ push2delay 健康探测 + 妙查 403 退避 30 分钟
+    - 缓存原因: 妙查日配额~100次,14次扫描×7只=98次完美卡限
+    - 缓存范围: 只缓存妙查路径, push2delay 几乎不限流不缓存
+    - 缓存粒度: 每只股票独立(避免个股当下真实资金流被串味)
 """
 import asyncio
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -44,6 +49,15 @@ except ImportError as e:
 
 # .env 开关: FUND_FLOW_BACKEND=push2delay 启用 Step 0
 USE_PUSH2DELAY = os.environ.get("FUND_FLOW_BACKEND", "").lower() in ("push2delay", "public", "1", "true", "yes")
+
+# v6.11: 缓存与退避配置
+CACHE_TTL_SECONDS = 900         # 妙查结果缓存 15 分钟
+MC_BACKOFF_SECONDS = 1800       # 妙查 403 后 30 分钟内不再尝试
+PUSH2_HEALTH_CHECK_TTL = 300    # push2delay 端点健康检查缓存 5 分钟
+_cache: Dict[str, tuple] = {}   # code -> (timestamp, MoneyFlowData)
+_mc_blocked_until: float = 0.0  # 妙查退避截止时间戳
+_push2_healthy: Optional[bool] = None
+_push2_last_check: float = 0.0
 
 
 @dataclass
@@ -177,6 +191,7 @@ def get_money_flow(code: str, name: str = "") -> Optional[MoneyFlowData]:
     2. 妙想数据(mx-finance-data) — 备选 (v6.3 新增)
 
     v6.8: 剔除 QVeris/财达 (100% 失败, QVERIS_API_KEY 从未配置)
+    v6.11: 加妙查 15 分钟缓存 + push2delay 健康探测 + 妙查 403 退避
 
     Args:
         code: 股票代码，如 "000629"
@@ -185,15 +200,25 @@ def get_money_flow(code: str, name: str = "") -> Optional[MoneyFlowData]:
     Returns:
         MoneyFlowData 或 None（失败时）
     """
+    global _mc_blocked_until
+
+    # v6.11: 妙查 15 分钟缓存(每只股票独立,避免个股数据被串味)
+    now = time.time()
+    cached = _cache.get(code)
+    if cached and (now - cached[0]) < CACHE_TTL_SECONDS:
+        logger.debug(f"[MoneyFlow] 缓存命中: {code} (age={int(now-cached[0])}s)")
+        return cached[1]
+
     # ===== Step 0: push2delay 公开端点 (v6.9,2026-06-04) =====
     # 免费, 几乎不限流, 作为最高优先级 fallback
     # 启用条件: .env 设 FUND_FLOW_BACKEND=push2delay (默认未启用)
-    if USE_PUSH2DELAY and _HAS_PUSH2DELAY:
+    # v6.11: 加端点健康探测,挂了 5 分钟内不再尝试
+    if USE_PUSH2DELAY and _HAS_PUSH2DELAY and _is_push2healthy():
         try:
             pub_data = fetch_public_flow(code, name)
             if pub_data:
                 logger.info(f"[MoneyFlow] push2delay 成功: 主力净流入={pub_data['main_net']:+.0f}万")
-                return MoneyFlowData(
+                result = MoneyFlowData(
                     code=pub_data["code"],
                     name=pub_data["name"],
                     main_net=pub_data["main_net"],
@@ -211,6 +236,8 @@ def get_money_flow(code: str, name: str = "") -> Optional[MoneyFlowData]:
                     ddy=0.0,
                     date=pub_data["date"],
                 )
+                _cache[code] = (now, result)  # v6.11: 缓存
+                return result
         except Exception as e:
             logger.warning(f"[MoneyFlow] push2delay 失败: {e}")
 
@@ -218,14 +245,20 @@ def get_money_flow(code: str, name: str = "") -> Optional[MoneyFlowData]:
     if API_KEY:
         result = _get_money_flow_eastmoney(code, name)
         if result is not None:
+            _cache[code] = (now, result)  # v6.11: 缓存
             return result
 
     # ===== Step 2: Fallback — 妙想数据 (v6.3,2026-06-03) =====
-    logger.info("[MoneyFlow] 东方财富不可用，尝试妙想数据(mx-finance-data)...")
-    mc_data = get_money_flow_via_miaochang(code, name)
-    if mc_data:
-        logger.info(f"[MoneyFlow] 妙想数据获取成功: 主力净流入={mc_data['main_net']:.0f}万")
-        return MoneyFlowData(
+    # v6.11: 妙查退避检查 - 403 后 30 分钟内跳过,避免反复触发配额
+    if now < _mc_blocked_until:
+        remaining = int(_mc_blocked_until - now)
+        logger.debug(f"[MoneyFlow] 妙查退避中,跳过(剩余{remaining}s): {code}")
+    else:
+        logger.info("[MoneyFlow] 东方财富不可用，尝试妙想数据(mx-finance-data)...")
+        mc_data = get_money_flow_via_miaochang(code, name)
+        if mc_data:
+            logger.info(f"[MoneyFlow] 妙想数据获取成功: 主力净流入={mc_data['main_net']:.0f}万")
+            result = MoneyFlowData(
             code=mc_data["code"],
             name=mc_data["name"],
             main_net=mc_data["main_net"],
@@ -238,14 +271,52 @@ def get_money_flow(code: str, name: str = "") -> Optional[MoneyFlowData]:
             super_in=mc_data["super_in"],
             super_out=mc_data["super_out"],
             small_net=mc_data["small_net"],
-            mid_net=mc_data.get("mid_net", 0.0),
-            ddx=mc_data["ddx"],
-            ddy=mc_data["ddy"],
-            date=mc_data.get("date", ""),
-        )
+                mid_net=mc_data.get("mid_net", 0.0),
+                ddx=mc_data["ddx"],
+                ddy=mc_data["ddy"],
+                date=mc_data.get("date", ""),
+            )
+            _cache[code] = (now, result)  # v6.11: 缓存
+            _mc_blocked_until = 0.0  # 成功后清退避
+            return result
+        else:
+            # v6.11: 妙查 403 触发退避
+            _mc_blocked_until = now + MC_BACKOFF_SECONDS
+            logger.warning(f"[MoneyFlow] 妙查失败,触发 {MC_BACKOFF_SECONDS}s 退避")
 
     logger.warning(f"[MoneyFlow] 全部资金流获取方式均失败: code={code}")
     return None
+
+
+def _is_push2healthy() -> bool:
+    """
+    v6.11: push2delay 端点健康探测
+    5 分钟内复用同一结果,避免每个请求都打探活
+    失败时返回 False,让 Step 0 跳过,直接走东财/妙查
+    """
+    global _push2_healthy, _push2_last_check
+    now = time.time()
+    if _push2_healthy is not None and (now - _push2_last_check) < PUSH2_HEALTH_CHECK_TTL:
+        return _push2_healthy
+    try:
+        import requests as _req
+        r = _req.get(
+            "https://push2delay.eastmoney.com/api/qt/stock/fflow/daykline/get",
+            params={"lmt": 1, "klt": 101, "secid": "0.000001",  # 沪指,避免污染数据
+                    "fields1": "f1,f2,f3,f4", "fields2": "f51,f52,f53,f54,f55,f56,f57,f58"},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=5,
+        )
+        import json as _json
+        d = _json.loads(r.text)
+        _push2_healthy = (d.get("rc") == 0 and d.get("data") is not None)
+    except Exception as e:
+        logger.debug(f"[MoneyFlow] push2delay 健康探测失败: {e}")
+        _push2_healthy = False
+    _push2_last_check = now
+    if not _push2_healthy:
+        logger.info("[MoneyFlow] push2delay 端点不健康,跳过 Step 0")
+    return _push2_healthy
 
 
 def _get_money_flow_eastmoney(code: str, name: str = "") -> Optional[MoneyFlowData]:
