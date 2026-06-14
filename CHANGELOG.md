@@ -1767,3 +1767,94 @@ if not is_in_open_window(now_time):
 
 ---
 
+
+## v6.14（2026-06-14 23:55）⭐ 静默修复 - TradeResult.pnl 老 bug
+
+**主题：修复 v6.13 末尾遗留问题 #1：止损成交时 AttributeError**
+
+> **背景**: v6.13 凌晨遗留 3 个老问题，只标了"留给 v6.14"。海赟 23:53 拍板"接着修 P2-7"（pnl bug），不修 6/14 周一先观察。范围控制到最小——4 个文件、~6 行实际代码改动 + CHANGELOG。
+
+### 🐛 根因
+
+`execute_sell`（`trading/executor.py:255`）算出 `pnl = total_proceeds - position.cost * (...)` 后只用作 `logger.info` 的输出和 `message` 字符串拼接，**没有存到 `TradeResult` 字段**。结果 watcher 3 处调用 (`watcher.py:392, 433, 456`) 都写 `if result.success and result.pnl is not None:`，会先访问 `result.pnl` → **AttributeError 抛出整个 scan cycle**。
+
+**触发条件**（v6.13 后影响面反而变大）：
+- v6.13 之前：止损依赖 `actionable_signals['stop_loss']`，资金流失败时整个降级为空，几乎走不到这段
+- v6.13 之后：独立止损每周期都跑一次 + 凌晨时间窗口保护之后，**实际触发止损的频次会升高**
+
+**后果链**（如果真触发）：
+1. `trades.db` 已写入 `STOP_LOSS` 记录（executor 在 watcher 异常前已完成撮合）
+2. `positions.json` status 改为 closed
+3. AttributeError 抛出 → 当前周期 scan 中断
+4. `notifier.send_trade_notification` **不被调用** → 海赟**收不到止损告警飞书**
+5. 后续 5 分钟 scan 周期也走不到相同代码（仓位已关）
+
+### 🆕 v6.14 P2-7 修复
+
+#### 1. `TradeResult` 加 `pnl: float = 0.0` 字段
+
+```python
+# trading/executor.py:22
+@dataclass
+class TradeResult:
+    ...
+    message: str
+    pnl: float = 0.0  # v6.14 P2-7 修复: 实际盈亏(元), BUY=0, SELL/STOP_LOSS=正负盈亏
+    trade_record: Optional[TradeRecord] = None
+```
+
+**兼容性**：`@dataclass` 默认值，所有老调用点不变（BUY 路径不传 pnl → 0.0）。
+
+#### 2. `execute_sell` 返回时填 pnl
+
+```python
+# trading/executor.py:263
+return TradeResult(
+    success=True,
+    ...
+    message=f"卖出成功，盈亏{pnl:+,.0f}元",
+    pnl=pnl,  # v6.14 P2-7: 把局部变量 pnl 存到 TradeResult
+    trade_record=trade
+)
+```
+
+#### 3. `monitor/watcher.py:391` 清理 v6.13 TODO 注释
+
+```python
+# 旧 (v6.13 留的): # v6.13 保留原 result.pnl 写法 (老 bug 已知, 留给 v6.14 修)
+# 新 (v6.14 修后): # v6.14 P2-7 修复: TradeResult.pnl 现已由 executor 填充, 不再 AttributeError
+```
+
+### 📁 改动量
+
+| 文件 | 改动 |
+|---|---|
+| `trading/executor.py` | +3/-0 (1 字段 + 1 赋值 + 1 注释) |
+| `monitor/watcher.py` | +1/-1 (注释改写) |
+| `CHANGELOG.md` | +57/-0 (本条目) |
+
+**实际代码改动：4 行 / 4 个文件。**
+
+### ✅ 验证（已 dry-run）
+
+| 测试场景 | 预期 |
+|---|---|
+| `TradeResult(success=True, action='BUY', ...)` 不传 pnl | 默认 0.0, 不报错 |
+| `executor.execute_sell(...)` 返回 TradeResult.pnl | 正确数值 (例 -29350.83 元) |
+| `result.success and result.pnl is not None` | 不再 AttributeError |
+| `_update_loss_streak_on_sell(code, pnl)` 调用 | 正常执行 |
+| `notifier.send_trade_notification(result.__dict__)` | 正常发送 (result.__dict__ 包含 pnl 字段) |
+
+### 📅 生效
+
+- 2026-06-14 23:55 手动 git commit
+- 6/15 (周一) 10:00 daemon 重启时加载 v6.14 (与 v6.13 同一天)
+- 届时如果攀钢浮亏仍 ≥ 止损线，独立止损触发时不会再 AttributeError
+- 6/13-6/14 周末扫描不跑，6/15 (周一) 才是 v6.13 + v6.14 第一次真考
+
+### ⚠️ 剩余遗留（v6.15 候选）
+
+1. ~~`TradeResult.pnl` 缺失~~ ✅ 本次修复
+2. **回测使用旧版信号系统**：`backtest/engine.py` 没接 v6.13 修复（独立止损 / 资金流降级）
+3. **逆流池模块尚未开发完毕**（海赟 6/4 明确说明）—— 涉及的 2 个 cron 错误保留
+4. **`is_trading_day()` 启动延迟**（v6.13 commit 注明）—— 9:15-9:29 期间被误判跳过
