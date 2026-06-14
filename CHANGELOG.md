@@ -1858,3 +1858,114 @@ return TradeResult(
 2. **回测使用旧版信号系统**：`backtest/engine.py` 没接 v6.13 修复（独立止损 / 资金流降级）
 3. **逆流池模块尚未开发完毕**（海赟 6/4 明确说明）—— 涉及的 2 个 cron 错误保留
 4. **`is_trading_day()` 启动延迟**（v6.13 commit 注明）—— 9:15-9:29 期间被误判跳过
+
+---
+
+## v6.15.0（2026-06-15 00:36）⭐ P1 修复 - is_trading_day() 启动延迟
+
+**主题：修复 v6.13 P2-5 留下的启动延迟（9:15-9:29 期间被误判为非交易日）**
+
+> **背景**: v6.13 commit message 明确标注 `P2-5 不彻底`, 9:15-9:29 仍误判, 留给 v6.15。0:21 端到端 dry-run 验证时海赟指出"模拟交易流程是否能正常跑通", 直接暴露 6/15 0:19 跑 scan 被 `is_trading_day()` 判 False 跳过的 bug, 触发本次修复。
+
+### 🐛 根因
+
+`is_trading_day()` 旧实现（`main.py:64-78` + `monitor/watcher.py:17-31`）用 `tx.get_history('sh000001', days=5)` 检查 `last_date == today`：
+
+```python
+# 旧 (v6.13):
+hist = tx.get_history('sh000001', days=5)  # 取最近 5 个交易日 K 线
+last_date = hist[-1].get('date', '')
+today = datetime.now().strftime('%Y-%m-%d')
+return last_date == today
+```
+
+**问题**：腾讯财经日 K 数据是**收盘后**才更新到 API，**开盘前 9:15-9:29 期间 last_date 还是昨日**（6/14 周日 → 6/12 周五）。**6/3 9:15/9:20/9:25 三次 scan 被跳过**，9:30 第一次真扫（watch_cron.log 历史可证）。
+
+**v6.13 把 days=2→5 只是加缓冲**，**逻辑没改**——**9:15-9:29 期间永远跳**。
+
+### 📊 影响范围
+
+| 时间 | 行为 | 影响 |
+|---|---|---|
+| 9:15-9:29 | is_trading_day()=False → 跳过 scan | 开盘前 15 分钟信号全丢 |
+| 9:30 之后 | txstock 更新当日 K → is_trading_day()=True | 正常扫描 |
+| 15:00 收盘 | 同样问题: 15:00 后 today != last_date → 跳过 | 不影响 (15:00 已停扫) |
+| 周末/节假日 | 永远 False (依赖数据) | 浪费时间网络请求 |
+
+### 🆕 v6.15.0 修复
+
+**新实现**：复用 `run_watch_daemon.sh` 同一套 `weekday + 节假日表` 判断，**不再依赖 txstock 日 K 数据**：
+
+```python
+# 新 (v6.15.0):
+_HOLIDAYS_2026 = {  # 与 run_watch_daemon.sh bash 端 100% 同步
+    '2026-01-01', '2026-01-02', '2026-01-03',          # 元旦
+    '2026-02-17' ~ '2026-02-24',                       # 春节
+    '2026-04-04', '2026-04-05', '2026-04-06',          # 清明
+    '2026-05-01' ~ '2026-05-05',                       # 劳动节
+    '2026-06-19', '2026-06-20', '2026-06-21',          # 端午
+    '2026-09-25' ~ '2026-09-27',                       # 中秋
+    '2026-10-01' ~ '2026-10-08',                       # 国庆
+}
+
+def is_trading_day() -> bool:
+    today = datetime.now()
+    if today.weekday() >= 5:   # 周六/周日
+        return False
+    if today.strftime('%Y-%m-%d') in _HOLIDAYS_2026:
+        return False
+    return True
+```
+
+**关键变更**：
+- `main.py:is_trading_day()` — 改用 weekday+节假日表
+- `monitor/watcher.py:17-31` — 改为 `from main import is_trading_day` (避免逻辑重复)
+
+### 🔧 同步策略
+
+`run_watch_daemon.sh:is_trading_day` (bash) 和 `main.py:is_trading_day()` (python) **必须用同一套判断**：
+- 守护脚本 5 分钟一次扫描, 工作日+非节假日才启动 watch
+- watch 启动后第一件事是调 `is_trading_day()`, 判定 True 才扫描
+- **如果两边判断不一致**, 会出现 "守护脚本启动 watch → watch 立即判定非交易日退出 → 5 分钟后守护脚本又启动" 的循环
+
+**v6.15.0 把 bash 端的节假日表**硬编码到 Python 端的 `_HOLIDAYS_2026`, **两端 100% 同步**。**新增/调整节假日时需同时改两边**。
+
+### 📁 改动量
+
+| 文件 | 改动 |
+|---|---|
+| `main.py` | +25/-7 (is_trading_day 改写 + 节假日表) |
+| `monitor/watcher.py` | +5/-19 (改为 from main import is_trading_day) |
+| `CHANGELOG.md` | +本条目 |
+
+### ✅ 验证（6/15 0:33 端到端 dry-run）
+
+| 场景 | 旧 v6.13 | 新 v6.15.0 |
+|---|---|---|
+| 6/15 周一 00:33 (现在) | False → 跳过 | **True → 正常扫描** ✅ |
+| 6/14 周日 00:33 | False | **False** ✅ |
+| 6/19 端午 (周五节假日) | False | **False** ✅ |
+| 6/20 周六 | False | **False** ✅ |
+| 6/16 周二 09:15 (新 bug 场景) | False → 跳 3 次 | **True → 立刻扫描** ✅ |
+| 6/22 调休后周一 09:15 | 取决于 txstock | **True** (我们的节假日表不含 6/22) ✅ |
+
+**端到端 dry-run 实测**：
+- 0:33 跑 `_run_watch_scan`, `is_trading_day()` 立刻返回 True
+- 7 只股票全部走完
+- 飞书 outbox 正常 (outbox/20260615_003307_dcc5b6c6.json, 915 chars)
+- 资金流 fallback 正常 (push2delay 5/7 成功)
+- trades.db 维持 1 条, 字节级未变
+- positions.json 维持 open, 字节级未变
+
+### 📅 生效
+
+- 2026-06-15 00:36 手动 git commit
+- 6/15 (周一) 09:15 守护脚本启动 watch 进程时加载 v6.15.0
+- **9:15 启动后第一轮 scan 即可正常工作** (v6.13/v6.14 必须 9:30 等 txstock)
+
+### ⚠️ 剩余遗留（v6.16 候选）
+
+1. ~~`TradeResult.pnl` 缺失~~ ✅ v6.14
+2. ~~`is_trading_day()` 启动延迟~~ ✅ v6.15.0
+3. 回测使用旧版信号系统 (backtest/engine.py 没接 v6.13 修复)
+4. 逆流池模块尚未开发完毕 (6/4 海赟明确)

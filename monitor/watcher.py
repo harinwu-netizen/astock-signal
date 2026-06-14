@@ -14,25 +14,16 @@ import signal
 import sys
 from datetime import datetime, timedelta, time as dtime
 from typing import List, Optional
-def is_trading_day() -> bool:
-    """判断今天是否为A股交易日（非周末且市场有数据）"""
-    from datetime import datetime
-    from data_provider.txstock import TxStock
-    try:
-        tx = TxStock()
-        # v6.13 (2026-06-14): days 2→5 缓冲
-        # 旧版 days=2 会拿不到"昨日 收盘后"的数据,导致启动时 today 与 last_date 不一致
-        # → 被误判为"非交易日"跳过扫描
-        # 6/3 (周三) 启动时就触发了这个 bug
-        hist = tx.get_history('sh000001', days=5)
-        if not hist:
-            return False
-        last_date = hist[-1].get('date', '')
-        today = datetime.now().strftime('%Y-%m-%d')
-        return last_date == today
-    except Exception:
-        # 数据获取失败时，保守假设是交易日（避免漏扫）
-        return True
+
+# v6.15.0 (2026-06-15): is_trading_day() 重构
+# 旧实现: 依赖 txstock.get_history('sh000001', days=5) 检查 last_date == today
+# 问题: 腾讯财经日 K 数据开盘后 9:30 前后才更新, 9:15-9:29 期间 last_date 还是昨日
+#   → 被误判为"非交易日"跳过扫描, 6/3 9:15/9:20/9:25 三次 scan 被跳过
+#   → 6/15 (周一) 9:15 启动后预计重复同样问题
+# 新实现: 复用 run_watch_daemon.sh 的 weekday+节假日表判断, 不依赖 txstock 数据
+#   守护脚本用同一套逻辑启动 watch, Python 端必须同步, 否则会出现
+#   "守护脚本启动 watch → watch 立即判定非交易日退出" 的循环
+from main import is_trading_day  # noqa: E402, F401
 from models.watchlist import WatchlistStore
 from config import get_config
 from models.position import PositionStore

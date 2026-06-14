@@ -61,22 +61,48 @@ def is_in_open_window(now_time=None) -> bool:
     return False
 
 
+# 2026 年 A股节假日表 (与 run_watch_daemon.sh 同步)
+# 数据来源: 中国证监会 2026 年股市休市安排
+_HOLIDAYS_2026 = {
+    # 元旦
+    '2026-01-01', '2026-01-02', '2026-01-03',
+    # 春节
+    '2026-02-17', '2026-02-18', '2026-02-19', '2026-02-20', '2026-02-21', '2026-02-22', '2026-02-23', '2026-02-24',
+    # 清明
+    '2026-04-04', '2026-04-05', '2026-04-06',
+    # 劳动节
+    '2026-05-01', '2026-05-02', '2026-05-03', '2026-05-04', '2026-05-05',
+    # 端午
+    '2026-06-19', '2026-06-20', '2026-06-21',
+    # 中秋
+    '2026-09-25', '2026-09-26', '2026-09-27',
+    # 国庆
+    '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04',
+    '2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08',
+}
+
 def is_trading_day() -> bool:
-    """判断今天是否为A股交易日（检查上证指数是否有今日数据）"""
-    from datetime import datetime
-    from data_provider.txstock import TxStock
-    try:
-        tx = TxStock()
-        # v6.13 (2026-06-14): days 2→5 缓冲 (与 monitor/watcher.py 同步)
-        hist = tx.get_history('sh000001', days=5)
-        if not hist:
-            return False
-        last_date = hist[-1].get('date', '')
-        today = datetime.now().strftime('%Y-%m-%d')
-        return last_date == today
-    except Exception:
-        # 数据获取失败时，保守假设是交易日（避免漏扫）
-        return True
+    """判断今天是否为 A股交易日 (工作日且非节假日)
+
+    v6.15.0 (2026-06-15): 重构，不再依赖 txstock 日 K 数据
+    旧实现: tx.get_history('sh000001', days=5) 检查 last_date == today
+    问题: 腾讯财经日 K 数据 9:30 开盘后某时点才更新
+      → 9:15-9:29 期间 last_date 还是昨日 → 被误判为"非交易日"跳过
+      → 6/3 9:15/9:20/9:25 三次 scan 被跳过, 9:30 才第一次真扫
+      → 6/15 (周一) 9:15 启动后预计重复同样问题
+    新实现: weekday() < 6 (周一到周五) + 不在 _HOLIDAYS_2026 表中
+      与 run_watch_daemon.sh 的 bash 端 is_trading_day 同步
+      Python 端不再调 txstock, 启动瞬间即可判断, 不浪费 9:15-9:30 时间
+    """
+    # 复用模块顶部 from datetime import datetime (第 32 行), 不重新 import
+    today = datetime.now()
+    # 周末 (5=周六, 6=周日) 直接返回 False
+    if today.weekday() >= 5:
+        return False
+    # 节假日返回 False
+    if today.strftime('%Y-%m-%d') in _HOLIDAYS_2026:
+        return False
+    return True
 
 # ===== 日志配置 =====
 logging.basicConfig(
