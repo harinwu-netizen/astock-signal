@@ -1631,3 +1631,139 @@ setup_env()  # 在 import 阶段加载 .env
 + FUND_FLOW_BACKEND=push2delay  # v6.11 重新启用,端点 15:35 已恢复,加健康探测自动跳过挂的状态
 ```
 
+
+---
+
+## v6.13（2026-06-14 01:40）⭐ 静默修复 - 信号可观测性 + 资金流降级改造
+
+**主题：修复 6/8-6/12 模拟交易 0 笔成交背后的多个静默 bug**
+
+> **背景**: 海赟 6/14 凌晨提问"这周信号灯有交易么"，小海排查发现 6/2 之后整整 12 天 **0 笔新交易**。根因有 3 个独立 bug + 1 个老问题，全部静默不可见。
+
+### 🐛 根因诊断
+
+| Bug | 触发场景 | 影响 |
+|---|---|---|
+| **#1 amount<1000 静默 continue** | 6/2 攀钢建仓占 30%, 弱市上限 30% → 剩余 0.03% × 100万 = 300元 < 1000元 | 6/8-6/12 共 101 次 BUY 决策 0 次成交 |
+| **#2 资金流失败 BUY→WATCH (P1 默认保守)** | 6/3-6/12 资金流三路 (东财/妙想/push2delay) 几乎全失败 | 即使有 BUY 决策也被降级为 WATCH，actions["buy"] 为空 |
+| **#3 止损检查依赖 actionable_signals['stop_loss']** | 同上：所有 signal 降级 WATCH → stop_loss 列表为空 | 攀钢浮亏 -9.68% 已超弱市 -2% 止损线 12 天未止损 |
+| **#4 is_trading_day() days=2 数据延迟** | 6/3 (周三) 启动时 last_date=6/2 → today=6/3 不等 → 误判非交易日 | 6/3-6/5 整天被跳过扫描 |
+
+### 🆕 v6.13 修复（按优先级）
+
+#### P0-1：信号可观测性（立刻修）
+
+**修复**：`monitor/watcher.py:463` 的 `if amount < 1000: continue` 加 log + 写 outbox 告警
+
+```python
+if amount < 1000:
+    logger.warning(
+        f"⚠️ [{signal.name}] 剩余可开仓 ¥{amount} < ¥1000 最低买入额，"
+        f"跳过 (position_ratio={position_ratio:.4f}, "
+        f"持仓占用 {current_total_pct:.2f}%, 上限 {total_position_pct}%)"
+    )
+    self._write_silenced_signal_alert(signal, reason="amount_too_small",
+                                       extra={"amount": amount, "position_ratio": position_ratio})
+    continue
+```
+
+#### P0-2：`_handle_buy_signals` 入口加 log
+
+**修复**：让"本周期 N 个 BUY 决策"可观测
+```python
+logger.info(
+    f"📋 _handle_buy_signals 进入: 本周期 {len(signals)} 个 BUY 决策 → "
+    f"{[s.name for s in signals]}"
+)
+```
+
+**配套新增方法**：`_write_silenced_signal_alert(signal, reason, extra)`
+- 写 `data/alert_silenced_signals/{ts}_{code}_{reason}.json`
+- 同时发飞书 outbox (kind=silenced_signal_alert)
+
+#### P1-3：资金流失败时 BUY 保留 + 降仓 50%（替代 WATCH 降级）
+
+**修复**：`indicators/signal_unified.py:308-325` 的 mf_fetch_failed 分支
+
+```python
+# 旧 v6.3 逻辑: BUY → WATCH (静默降级)
+# 新 v6.13 逻辑: 保留 BUY, position_ratio * 0.5 (降仓 50%)
+if mf_fetch_failed:
+    if decision == "BUY":
+        if position_ratio > 0:
+            position_ratio = position_ratio * 0.5
+        else:
+            position_ratio = 0.05
+        reason = f"{reason} ⚠️[资金流缺失,建议降仓至{position_ratio:.1%}]"
+    elif decision in ("HOLD", "TAKE_PROFIT"):
+        reason = f"{reason} ⚠️资金流数据获取失败"
+```
+
+#### P2-5：`is_trading_day()` days 2→5 缓冲
+
+**修复**：`monitor/watcher.py:17-31` + `main.py:64-78`
+
+```python
+# 旧: hist = tx.get_history('sh000001', days=2)  # 数据延迟时 today != last_date → 误判
+# 新: hist = tx.get_history('sh000001', days=5)  # 5 天缓冲
+```
+
+#### P2-6：独立止损检查（不依赖 actionable_signals）
+
+**修复**：在 `_run_scan_cycle` 第 5 步（stop_loss）后插入 5.5 步
+```python
+# 5.5 v6.13: 独立止损检查 (不依赖 actionable_signals['stop_loss'])
+self._handle_stop_loss_for_all_positions(signals)
+```
+
+**新增方法**：`_handle_stop_loss_for_all_positions(signals)`
+- 直接遍历 `position_store.get_open_positions()`
+- 用 `signal_map[code]` 拿到当前实时价检查止损
+- 复用原 `_handle_stop_loss_signals` 完全相同的 4 个止损条件
+
+#### P2-6.1：独立止损加交易时间窗口保护
+
+**修复**：凌晨 1 点时，止损只 log 警告，**不实际下单**，避免非交易时间被强平
+
+```python
+# v6.13.1: 凌晨/午休/盘后不实际下单
+if not is_in_open_window(now_time):
+    # 只 log 警告, 实际止损推到下一轮交易时间内执行
+    return
+```
+
+### ✅ 验证
+
+| 测试场景 | 结果 |
+|---|---|
+| 6/8 10:00 资金流成功时, 走原资金否决路径 | 攀钢 BUY, position_ratio=0.3 ✅ |
+| 6/12 14:00 资金流全失败时, 走新 mf_fetch_failed 路径 | 攀钢 **BUY** (不再是 WATCH), position_ratio=0.15 ✅ |
+| 凌晨 1 点 dry-run `_handle_stop_loss_for_all_positions` | 只 log 警告, trades.db 不变, positions.json status=open ✅ |
+| 6/3 (周三) 启动时 is_trading_day() | days=5 缓冲后正确返回 True (待 6/15 验证) |
+
+### 📁 备份
+
+`backup/v6.13_2026-06-14_silence_fix/`:
+- `watcher.py` (改动前)
+- `signal_unified.py` (改动前)
+- `scanner.py` (改动前, 但本次未改)
+
+### ⚠️ 已知遗留问题（不属 v6.13 范围，留给 v6.14）
+
+1. **`TradeResult` 没有 `pnl` 字段**：`monitor/watcher.py:433,456` 的 `result.pnl` 实际是 `TradeResult` 不存在的属性（仅局部变量）
+   - 影响：止损成交时 `_update_loss_streak_on_sell` 会抛 AttributeError
+   - 修复方案：把 `pnl` 存到 `TradeResult` 字段或 `TradeRecord`
+2. **回测使用旧版信号系统**：`backtest/engine.py` 没接 v6.13 修复
+3. **逆流池模块尚未开发完毕**（海赟 6/4 明确说明）—— 涉及的 2 个 cron 错误保留
+
+### 📅 生效
+
+- 2026-06-14 凌晨 1:40 立即生效（手动 git add 提交，daemon 9:15 启动新进程）
+- 6/15 (周一) 10:00 自动重启 watch 进程时加载 v6.13
+- 建议周一观察 09:15-15:00 的 watch_cron.log：
+  - 应该看到 `📋 _handle_buy_signals 进入` log 出现
+  - 资金流失败时应该看到 `⚠️[资金流缺失,建议降仓至X%]` 出现在 outbox
+  - 不再出现 `if amount < 1000` 静默 continue
+
+---
+

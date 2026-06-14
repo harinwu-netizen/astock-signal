@@ -20,11 +20,7 @@ def is_trading_day() -> bool:
     from data_provider.txstock import TxStock
     try:
         tx = TxStock()
-        # v6.13 (2026-06-14): days 2→5 缓冲
-        # 旧版 days=2 会拿不到"昨日 收盘后"的数据,导致启动时 today 与 last_date 不一致
-        # → 被误判为"非交易日"跳过扫描
-        # 6/3 (周三) 启动时就触发了这个 bug
-        hist = tx.get_history('sh000001', days=5)
+        hist = tx.get_history('sh000001', days=2)
         if not hist:
             return False
         last_date = hist[-1].get('date', '')
@@ -166,13 +162,6 @@ class Watcher:
         if actions["stop_loss"]:
             self._handle_stop_loss_signals(actions["stop_loss"])
 
-        # 5.5 v6.13 (2026-06-14): 独立止损检查
-        # 旧问题：止损信号依赖 actionable_signals['stop_loss']，但
-        #   资金流失败时所有 signal 都被降级 WATCH → stop_loss 列表为空
-        #   → 持仓浮亏超 -2% (弱市止损线) 但不会触发
-        # 新逻辑：直接遍历持仓，用对应股票的实时信号检查止损
-        self._handle_stop_loss_for_all_positions(signals)
-
         # 6. 处理卖出信号
         if actions["sell"]:
             self._handle_sell_signals(actions["sell"])
@@ -272,127 +261,6 @@ class Watcher:
             state[code] = {"streak": 0, "lock_until": ""}
             self._save_loss_streak(state)
         return False
-
-    def _write_silenced_signal_alert(self, signal, reason: str, extra: dict = None):
-        """v6.13 (2026-06-14): 写"信号被静默吃掉"告警到 outbox
-
-        适用场景：
-          - amount < 1000 静默跳过 (仓位被占用)
-          - quantity < 1 静默跳过
-          - 资金流失败 BUY 降级 WATCH
-        """
-        try:
-            from datetime import datetime
-            import json
-            from pathlib import Path
-
-            # 写到 data/alert_silenced_signals/ 目录
-            alert_dir = Path(self.config.data_dir) / "alert_silenced_signals"
-            alert_dir.mkdir(parents=True, exist_ok=True)
-
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            alert = {
-                "timestamp": datetime.now().isoformat(),
-                "code": signal.code,
-                "name": signal.name,
-                "price": signal.price,
-                "decision": signal.decision.value if hasattr(signal.decision, 'value') else str(signal.decision),
-                "buy_count": signal.buy_count,
-                "reason_silenced": reason,
-                "extra": extra or {},
-            }
-            alert_file = alert_dir / f"{ts}_{signal.code}_{reason}.json"
-            with open(alert_file, "w", encoding="utf-8") as f:
-                json.dump(alert, f, ensure_ascii=False, indent=2)
-
-            # 也发到飞书 outbox (但不走 _run_scan_cycle 同一轮，避免循环)
-            notifier = self.notifier
-            if notifier.enabled:
-                content = (
-                    f"⚠️ *信号被静默吃掉* `{signal.code} {signal.name}`\n"
-                    f"原因: `{reason}`\n"
-                    f"价格: ¥{signal.price:.2f}  决策: {alert['decision']}  buy_count: {signal.buy_count}\n"
-                    f"extra: `{json.dumps(extra or {}, ensure_ascii=False)}`"
-                )
-                notifier._write_to_outbox(content, "markdown", kind="silenced_signal_alert")
-        except Exception as e:
-            logger.error(f"写信号静默告警失败: {e}")
-
-    def _handle_stop_loss_for_all_positions(self, signals):
-        """v6.13 (2026-06-14): 独立遍历持仓检查止损
-
-        不依赖 actionable_signals['stop_loss']，确保资金流失败/信号降级时
-        止损检查不被静默跳过。
-        """
-        from datetime import datetime
-        position_store = PositionStore()
-        executor = self.executor
-        cfg = self.config
-
-        # v6.13.1 (2026-06-14): 增加交易时间窗口保护
-        # 凌晨/午休/盘后不应该执行实际交易
-        now_time = datetime.now().time()
-        from main import is_in_open_window
-        if not is_in_open_window(now_time):
-            logger.debug(
-                f"_handle_stop_loss_for_all_positions: 非交易时间窗口({now_time.strftime('%H:%M')}),"
-                f" 止损检查跳过（仅记录状态，不实际下单）"
-            )
-            # 只 log，不实际下单 — 避免凌晨 1 点被止损
-            # 实际下单推到下一轮交易时间内执行
-            for position in position_store.get_open_positions():
-                sig = next((s for s in signals if s.code == position.code), None)
-                if not sig:
-                    continue
-                pnl_pct = (sig.price - position.buy_price) / position.buy_price * 100
-                if sig.price <= position.stop_loss or pnl_pct <= -position.stop_loss_pct:
-                    logger.warning(
-                        f"⚠️ [{position.name}] 非交易时间检测到止损条件:"
-                        f" 价格¥{sig.price:.2f} 止损¥{position.stop_loss:.2f}"
-                        f" 浮亏{pnl_pct:.1f}%, 等待交易时间窗口执行"
-                    )
-            return
-
-        # 按 code 索引当前 signals
-        signal_map = {s.code: s for s in signals}
-
-        for position in position_store.get_open_positions():
-            sig = signal_map.get(position.code)
-            if not sig:
-                # 该持仓股票不在股票池中 → 跳过
-                # (理论上不会发生，但加保护)
-                continue
-
-            # 重用与 _handle_stop_loss_signals 完全相同的止损判断逻辑
-            hold_days = (datetime.now().date() - datetime.strptime(position.buy_date, "%Y-%m-%d").date()).days
-            pnl_pct = (sig.price - position.buy_price) / position.buy_price * 100
-
-            sell_reason = None
-
-            # 条件1: ATR追踪止损
-            if sig.price <= position.stop_loss:
-                sell_reason = f"ATR追踪止损({sig.price:.2f}≤{position.stop_loss:.2f})"
-
-            # 条件2: 持仓超期（非弱市）
-            elif position.market_regime != "WEAK" and hold_days >= position.max_hold_days:
-                sell_reason = f"持仓超期({hold_days}天≥{position.max_hold_days}天)"
-
-            # 条件3: 亏损超限
-            elif pnl_pct <= -position.stop_loss_pct:
-                sell_reason = f"亏损超限({pnl_pct:.1f}%≤-{position.stop_loss_pct}%)"
-
-            # 条件4: 弱市RSI反弹到位
-            elif position.market_regime == "WEAK" and sig.rsi_6 > cfg.weak_rsi_sell_threshold:
-                sell_reason = f"弱市RSI反弹到位({sig.rsi_6:.1f}>{cfg.weak_rsi_sell_threshold:.0f})"
-
-            if sell_reason:
-                logger.warning(f"🚨 [v6.13 独立止损] {position.name} @{sig.price:.2f} — {sell_reason}")
-                result = executor.execute_stop_loss(position)
-                # v6.13 保留原 result.pnl 写法 (老 bug 已知, 留给 v6.14 修)
-                if result.success and result.pnl is not None:
-                    self._update_loss_streak_on_sell(position.code, result.pnl)
-                if self.notifier.enabled:
-                    self.notifier.send_trade_notification(result.__dict__)
 
     def _handle_stop_loss_signals(self, signals):
         """处理止损信号（v4.1 弱强市自适应优化）"""
@@ -497,16 +365,7 @@ class Watcher:
             return
 
         if not self.config.auto_trade:
-            logger.debug("_handle_buy_signals 跳过：auto_trade=False")
             return
-
-        # v6.13 (2026-06-14): 让"本周期有 N 个 BUY 决策"可观测
-        # 之前 _handle_sell_signals 有 log, _handle_buy_signals 没有
-        # 导致 amount<1000 静默 continue 等 bug 完全不可见
-        logger.info(
-            f"📋 _handle_buy_signals 进入: 本周期 {len(signals)} 个 BUY 决策 → "
-            f"{[s.name for s in signals]}"
-        )
 
         # 根据市场状态获取对应参数
         cfg = self.config
@@ -603,26 +462,10 @@ class Watcher:
             amount = int(amount // 100) * 100  # 取整到百元
 
             if amount < 1000:
-                # v6.13 (2026-06-14): 静默 continue 会让"信号被吃掉"完全不可见
-                # 仓位已接近上限时（弱市满仓+新 BUY 信号）会走到这里
-                # 改为可观测 log + 写 outbox 告警
-                logger.warning(
-                    f"⚠️ [{signal.name}] 剩余可开仓 ¥{amount} < ¥1000 最低买入额，"
-                    f"跳过 (position_ratio={position_ratio:.4f}, "
-                    f"持仓占用 {current_total_pct:.2f}%, 上限 {total_position_pct}%)"
-                )
-                self._write_silenced_signal_alert(signal, reason="amount_too_small",
-                                                   extra={"amount": amount, "position_ratio": position_ratio})
                 continue
 
             quantity = amount // (signal.price * 100)
             if quantity < 1:
-                # v6.13: 同样加 log
-                logger.warning(
-                    f"⚠️ [{signal.name}] amount=¥{amount} 但 {signal.price:.2f}×100 后 quantity<1，跳过"
-                )
-                self._write_silenced_signal_alert(signal, reason="quantity_too_small",
-                                                   extra={"amount": amount, "price": signal.price})
                 continue
 
             # 执行买入（传递市场状态参数）

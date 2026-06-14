@@ -67,7 +67,8 @@ def is_trading_day() -> bool:
     from data_provider.txstock import TxStock
     try:
         tx = TxStock()
-        hist = tx.get_history('sh000001', days=2)
+        # v6.13 (2026-06-14): days 2→5 缓冲 (与 monitor/watcher.py 同步)
+        hist = tx.get_history('sh000001', days=5)
         if not hist:
             return False
         last_date = hist[-1].get('date', '')

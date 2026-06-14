@@ -306,21 +306,12 @@ def analyze_unified(
         decision = "WATCH"
         reason = f"信号不足[{primary.buy_count}/2]"
 
-    # ===== 资金流否决机制（v6.13 改造：失败=保留信号+降仓位，不进 WATCH）=====
-    # 旧逻辑（v6.3 引入 P1）：资金流获取失败时 BUY 降级为 WATCH
-    # 问题（2026-06-14 发现）：6/3-6/12 几乎全天资金流失败 → 所有 BUY 静默降级
-    #   → 模拟交易 0 笔新交易（虽然有 101 次 BUY 决策但都被 WATCH 吃掉）
-    # 新逻辑：保留 BUY 决策 + position_ratio * 0.5（保守降仓）+ log + outbox 告警
+    # ===== 资金流否决机制（P1优化：失败=默认保守）=====
     if mf_fetch_failed:
+        # P1：资金流获取失败，默认保守处理，不冒进
         if decision == "BUY":
-            # 保留 BUY 决策，但建议仓位降 50%
-            if position_ratio > 0:
-                position_ratio = position_ratio * 0.5
-            else:
-                position_ratio = 0.05  # 默认 5% (超保守)
-            # 不修改 decision, 让 _handle_buy_signals 继续处理
-            # 但附加 warning 让海赟知道资金流有风险
-            reason = f"{reason} ⚠️[资金流缺失,建议降仓至{position_ratio:.1%}]"
+            decision = "WATCH"
+            reason = f"【资金流获取失败，默认否决】{reason}"
         elif decision in ("HOLD", "TAKE_PROFIT"):
             # 持仓中断言风险保留，但追加警告
             reason = f"{reason} ⚠️资金流数据获取失败"
