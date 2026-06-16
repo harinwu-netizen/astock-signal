@@ -2102,3 +2102,64 @@ fi
   - 东方财富 EM_API_KEY(4 月起失效,仅作历史记录)
   - 妙想 mx-finance-data 手动跑
 ```
+
+---
+
+## v6.18（2026-06-16 17:23）⭐ evolution stats 每日自动刷新 + 全面体检
+
+### 🚨 触发
+海赟提醒"是否检查了 evolution 自进化模块运行状态",小海立即做了 4 步深入检查:
+1. P1 weight_manager schema: 实际是测试脚本笔误, 代码本身一致
+2. P2 stats_analyzer 缓存 6/2 后 14 天未刷新
+3. P3 月末复盘 cron: 实际是 OpenClaw cron f612ad24 在跑, 不需新增
+4. 全面体检信号灯系统: 6 个可能的接缝点全部检查通过
+
+### 🐛 P2 真根因 (跟 P1 evolution 决策日志 13 天断流是同一种模式)
+
+**问题**: stats_analyzer 缓存 signal_stats.json 停在 6/2 15:00
+
+**根因**: 
+- orchestrator.on_market_close() 存在
+- 但 monitor/watcher.py (实跑路径) 未调它
+- 仅 main.py:report 手动命令调过
+
+**修复**: 
+- monitor/watcher.py:_run_scan_cycle 第 9 步后插入 on_market_close
+- 触发时机: 14:30 后 (v6.7 15min 间隔, 14:30/14:45 两次命中)
+- 去重: cycle_state.json last_market_close_date (一天一次)
+
+### 📊 体检 6 大节点
+
+| 节点 | 状态 |
+|------|------|
+| orchestrator 6 钩子 | watcher 接 2, 其他 4 由 OpenClaw cron/手动 |
+| 持仓管理 | ✅ |
+| 实盘交易 | auto_trade=False 默认安全 |
+| 飞书推送 | notifier.enabled=True |
+| 月末复盘 | OpenClaw cron f612ad24 在跑 |
+| 风险控制 | RiskController 已初始化 |
+
+### ✅ 验证 (17:08)
+- 手动调 on_market_close 成功
+- signal_stats.json mtime: 6/2 15:00 → 6/16 17:08
+- total_records: 1700 → 1781
+- 重复调用: 今日已调, 跳过 (✅ 去重生效)
+- 信号胜率更新: rsi_oversold 9.9%→9.3% (新数据进入)
+
+### 🔄 同步清理
+- crontab: 删过时注释 '# A股信号灯 - 每月末自学习进化月度报告 (28-31日18:00)'
+  实际由 OpenClaw cron f612ad24 接管
+
+### 📅 生效
+- 6/17 10:00 第一次扫描: evolution/decision_log.csv +7 条
+- 6/17 14:30 / 14:45 扫描: signal_stats.json 自动刷新
+- 6/28 18:00 OpenClaw cron 月末复盘自动跑
+
+### 📊 当前 commit 全景
+- e468970 v6.18 stats 每日自动刷新
+- 01acf18 v6.17 evolution 决策日志接通
+- 8ad13a5 logger debug→warning
+- 6dc3119 v6.16 资金流全面简化
+
+### 🟢 结论
+信号灯系统**已无阻塞性问题**。
