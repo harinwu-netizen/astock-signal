@@ -172,6 +172,18 @@ class Watcher:
         if actions["buy"]:
             self._handle_buy_signals(actions["buy"], market_regime)
 
+        # 7.5 v6.17 (2026-06-16): 写入 evolution 决策日志
+        # 背景: 之前 6/3 后决策日志 0 条 13 天, 根因是 watcher.py 路径未调 on_scan_completed
+        # 只有 main.py:484 手动 watch 才写, 但信号灯实跑 --continuous 不写
+        # 修复: 在 _run_scan_cycle 加 on_scan_completed 调用
+        try:
+            from evolution.orchestrator import on_scan_completed
+            # market_regime 是 MarketRegimeResult, 取 .regime.value
+            regime_value = market_regime.regime.value if hasattr(market_regime, 'regime') else str(market_regime)
+            on_scan_completed(signals, regime_value)
+        except Exception as e:
+            logger.warning(f"[Evolution] 记录决策失败: {type(e).__name__}: {e}")
+
         # 8. 更新持仓信号
         self._update_positions(signals)
 
