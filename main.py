@@ -286,7 +286,7 @@ def cmd_analyze(code: str = "", pool: bool = False):
             from evolution.orchestrator import on_scan_completed
             on_scan_completed([signal], market_status.value)
         except Exception as e:
-            logger.debug(f"[Evolution] 记录决策失败: {e}")
+            logger.warning(f"[Evolution] 记录决策失败: {type(e).__name__}: {e}")
         # ===========================================
 
         # 打印结果
@@ -481,7 +481,7 @@ def _run_watch_scan(watchlist, manual: bool = False):
             from evolution.orchestrator import on_scan_completed
             on_scan_completed(signals, market_status.value)
         except Exception as e:
-            logger.debug(f"[Evolution] 记录决策失败（不中断流程）: {e}")
+            logger.warning(f"[Evolution] 记录决策失败（不中断流程）: {type(e).__name__}: {e}")
         # =========================================================
 
         # 刷新已有持仓的现价和浮盈（每次scan都更新）
