@@ -195,6 +195,25 @@ class Watcher:
         if self.notifier.enabled and in_window:
             self.notifier.send_signal_report(signals)
 
+        # 9.5 v6.18 (2026-06-16): 每日收盘后调 on_market_close 刷新 stats
+        # 背景: stats_analyzer 缓存 6/2 后 14 天未刷新, 根因是 watcher.py 未调 on_market_close
+        # 时机: 每天 14:30 之后 (v6.7 间隔 15min, 14:30/14:45 会命中)
+        # 去重: cycle_state.json last_market_close_date + 日期比较, 一天只调一次
+        from datetime import time as _time, date as _date
+        if now_time >= _time(14, 30):
+            try:
+                from evolution.weight_manager import _load_cycle_state, _save_cycle_state
+                state = _load_cycle_state()
+                today_str = _date.today().isoformat()
+                if state.get('last_market_close_date') != today_str:
+                    from evolution.orchestrator import on_market_close
+                    on_market_close()
+                    state['last_market_close_date'] = today_str
+                    _save_cycle_state(state)
+                    logger.info(f"[Evolution] 每日收盘后 stats 已刷新 (date={today_str})")
+            except Exception as e:
+                logger.warning(f"[Evolution] on_market_close 失败: {type(e).__name__}: {e}")
+
     def _detect_market_regime(self):
         """
         检测市场状态（强市/震荡/弱市）
