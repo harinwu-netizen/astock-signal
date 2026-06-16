@@ -1,63 +1,44 @@
 """
-资金流数据获取器
-使用东方财富 EM_API_KEY 获取主力资金流数据
-东方财富超限后自动切换 妙想数据(mx-finance-data) 作为 fallback
-v6.8 (2026-06-04): 剔除 QVeris/财达 (QVERIS_API_KEY 从未设置, 100% 失败)
-v6.9 (2026-06-04): push2delay 公开端点作为 Step 0 (免费, 几乎不限流)
-v6.10 (2026-06-09): 修复 setup_env() 未在模块加载时调用导致 USE_PUSH2DELAY 始终为 False
-v6.11 (2026-06-10): 妙查 15 分钟缓存(7只股票各取各的)+ push2delay 健康探测 + 妙查 403 退避 30 分钟
-    - 缓存原因: 妙查日配额~100次,14次扫描×7只=98次完美卡限
-    - 缓存范围: 只缓存妙查路径, push2delay 几乎不限流不缓存
-    - 缓存粒度: 每只股票独立(避免个股当下真实资金流被串味)
+资金流数据获取器 (v6.12, 2026-06-16 简化版)
+
+设计原则:
+- 极简双源:妙想数据(主,实时) + push2delay(兜底,15分钟延迟)
+- 删 v6.11 健康探测缓存(锁 4 小时的元凶)
+- 删 30 分钟妙查退避(叠加失效的元凶)
+- 删东方财富 EM_API_KEY(4 月起就废的死代码)
+- 删 .env 开关(默认启用 push2delay 兜底)
+
+字段说明:
+- 妙想:字段全(main_net/in/out, big_net/in/out, super_net/in/out, ddx, ddy)
+- push2delay:仅 main_net/big_net/super_net/small_net/mid_net 5 个(无 main_in/out, ddx=0, ddy=0)
+
+调用方:indicators/signal_unified.py
 """
-import asyncio
 import logging
-import os
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
-import httpx
-
-# v6.10: 必须在 import 阶段加载 .env, 否则模块级 os.environ.get() 拿不到值
-# 原因: money_flow.py 会在 import 时执行 USE_PUSH2DELAY 赋值,
-# 此时 Config.load() 还没被调用, .env 也未加载
-from config import setup_env
-setup_env()
-
-logger = logging.getLogger("MoneyFlow")
-
-API_URL = "https://ai-saas.eastmoney.com/proxy/app-robo-advisor-api/assistant/ask"
-API_KEY = os.environ.get("EM_API_KEY", "")
-
-# 妙查 fallback (v6.3,2026-06-03) - v6.8 简化掉 QVeris
+# 妙想数据 (主源,v6.3+)
 from data_provider.miaochang_money_flow import get_money_flow_via_miaochang
 
-# v6.9: push2delay 公开端点 (免费, 几乎不限流)
-# 脚本位置: ~/.openclaw/workspace/scripts/fund_flow_api.py
+# push2delay 公开端点 (兜底,v6.9+)
 _SCRIPTS_DIR = Path.home() / ".openclaw" / "workspace" / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 try:
     from fund_flow_api import fetch_public_flow
-    _HAS_PUSH2DELAY = True
 except ImportError as e:
-    logger.warning(f"[MoneyFlow] push2delay 模块导入失败: {e}")
-    _HAS_PUSH2DELAY = False
+    logging.warning(f"[MoneyFlow] push2delay 模块导入失败: {e}")
+    fetch_public_flow = None
 
-# .env 开关: FUND_FLOW_BACKEND=push2delay 启用 Step 0
-USE_PUSH2DELAY = os.environ.get("FUND_FLOW_BACKEND", "").lower() in ("push2delay", "public", "1", "true", "yes")
+logger = logging.getLogger("MoneyFlow")
 
-# v6.11: 缓存与退避配置
-CACHE_TTL_SECONDS = 900         # 妙查结果缓存 15 分钟
-MC_BACKOFF_SECONDS = 1800       # 妙查 403 后 30 分钟内不再尝试
-PUSH2_HEALTH_CHECK_TTL = 300    # push2delay 端点健康检查缓存 5 分钟
-_cache: Dict[str, tuple] = {}   # code -> (timestamp, MoneyFlowData)
-_mc_blocked_until: float = 0.0  # 妙查退避截止时间戳
-_push2_healthy: Optional[bool] = None
-_push2_last_check: float = 0.0
+# 15 分钟缓存(避免同一股票 1 分钟内重复请求)
+CACHE_TTL_SECONDS = 900
+_cache: Dict[str, tuple] = {}  # code -> (timestamp, MoneyFlowData)
 
 
 @dataclass
@@ -75,8 +56,8 @@ class MoneyFlowData:
     super_in: float     # 超大单流入（万元）
     super_out: float    # 超大单流出（万元）
     small_net: float    # 小单净流入（万元）
-    mid_net: float     # 中单净流入（万元，QVeris财达提供）
-    ddx: float         # DDX 指标
+    mid_net: float      # 中单净流入（万元）
+    ddx: float          # DDX 指标
     ddy: float          # DDY 指标
     date: str           # 数据日期
 
@@ -119,146 +100,35 @@ class MoneyFlowData:
         return " + ".join(reasons) if reasons else ""
 
 
-def _parse_table_value(table_md: str, key: str) -> Optional[float]:
-    lines = table_md.strip().split("\n")
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith('| ---') or '数据如下' in stripped:
-            continue
-        if key not in stripped or '|' not in stripped:
-            continue
-        parts = [p.strip() for p in stripped.split('|')]
-        for i, part in enumerate(parts):
-            if key in part:
-                if i + 1 < len(parts):
-                    val_str = parts[i + 1].strip()
-                    val = _convert_unit(val_str)
-                    if val is not None:
-                        return val
-    return None
-
-
-def _convert_unit(val_str: str) -> Optional[float]:
-    if not val_str:
-        return None
-    val_str = val_str.replace(",", "")
-    is_yi = "亿" in val_str
-    val_str = val_str.replace("亿", "").replace("万元", "").replace("万", "").strip()
-    try:
-        val = float(val_str)
-        return val * 10000 if is_yi else val
-    except ValueError:
-        return None
-
-
-def _parse_markdown_tables(refs: List[dict]) -> Dict[str, float]:
-    result = {}
-    field_map = {
-        "主力净流入": ["主力净流入", "主力净流入资金", "主力净额"],
-        "主力流入": ["主力流入", "主力流入资金"],
-        "主力流出": ["主力流出", "主力流出资金"],
-        "大单净流入": ["大单净流入", "大单净额", "大单净流入资金"],
-        "大单流入": ["大单流入"],
-        "大单流出": ["大单流出"],
-        "超大单净流入": ["超大单净额", "超大单净流入"],
-        "超大单流入": ["超大单流入"],
-        "超大单流出": ["超大单流出"],
-        "小单净流入": ["小单净额", "小单净流入"],
-        "DDX": ["DDX"],
-        "DDY": ["DDY"],
-    }
-    for ref in refs:
-        if ref.get("type") != "查数":
-            continue
-        markdown = ref.get("markdown", "")
-        if not markdown:
-            continue
-        for field_name, keywords in field_map.items():
-            if field_name in result:
-                continue
-            for kw in keywords:
-                val = _parse_table_value(markdown, kw)
-                if val is not None:
-                    result[field_name] = val
-                    break
-    return result
-
-
 def get_money_flow(code: str, name: str = "") -> Optional[MoneyFlowData]:
     """
-    获取单只股票资金流数据（两级 fallback，v6.8 简化）
-    1. 东方财富(EM_API_KEY) — 优先
-    2. 妙想数据(mx-finance-data) — 备选 (v6.3 新增)
+    获取单只股票资金流数据 (v6.12 简化版)
 
-    v6.8: 剔除 QVeris/财达 (100% 失败, QVERIS_API_KEY 从未配置)
-    v6.11: 加妙查 15 分钟缓存 + push2delay 健康探测 + 妙查 403 退避
+    流程:
+      1. 15 分钟缓存(每只股票独立)
+      2. 妙想数据(主源, 实时, 字段全)
+      3. push2delay(兜底, 15 分钟延迟, 字段缺 ddx/main_in/out)
 
     Args:
-        code: 股票代码，如 "000629"
-        name: 股票名称，如 "钒钛股份"
+        code: 股票代码,如 "000629"
+        name: 股票名称,如 "钒钛股份"
 
     Returns:
-        MoneyFlowData 或 None（失败时）
+        MoneyFlowData 或 None(全部失败时)
     """
-    global _mc_blocked_until
-
-    # v6.11: 妙查 15 分钟缓存(每只股票独立,避免个股数据被串味)
     now = time.time()
+
+    # 1️⃣ 15 分钟缓存
     cached = _cache.get(code)
     if cached and (now - cached[0]) < CACHE_TTL_SECONDS:
         logger.debug(f"[MoneyFlow] 缓存命中: {code} (age={int(now-cached[0])}s)")
         return cached[1]
 
-    # ===== Step 0: push2delay 公开端点 (v6.9,2026-06-04) =====
-    # 免费, 几乎不限流, 作为最高优先级 fallback
-    # 启用条件: .env 设 FUND_FLOW_BACKEND=push2delay (默认未启用)
-    # v6.11: 加端点健康探测,挂了 5 分钟内不再尝试
-    if USE_PUSH2DELAY and _HAS_PUSH2DELAY and _is_push2healthy():
-        try:
-            pub_data = fetch_public_flow(code, name)
-            if pub_data:
-                logger.info(f"[MoneyFlow] push2delay 成功: 主力净流入={pub_data['main_net']:+.0f}万")
-                result = MoneyFlowData(
-                    code=pub_data["code"],
-                    name=pub_data["name"],
-                    main_net=pub_data["main_net"],
-                    main_in=0.0,        # push2delay 不提供此字段
-                    main_out=0.0,
-                    big_net=pub_data["big_net"],
-                    big_in=0.0,
-                    big_out=0.0,
-                    super_net=pub_data["super_net"],
-                    super_in=0.0,
-                    super_out=0.0,
-                    small_net=pub_data["small_net"],
-                    mid_net=pub_data["mid_net"],
-                    ddx=0.0,             # push2delay 不提供此字段
-                    ddy=0.0,
-                    date=pub_data["date"],
-                )
-                _cache[code] = (now, result)  # v6.11: 缓存
-                return result
-        except Exception as e:
-            logger.warning(f"[MoneyFlow] push2delay 失败: {e}")
-
-    # ===== Step 1: 尝试东方财富 =====
-    if API_KEY:
-        result = _get_money_flow_eastmoney(code, name)
-        if result is not None:
-            _cache[code] = (now, result)  # v6.11: 缓存
-            return result
-
-    # ===== Step 2: Fallback — 妙想数据 (v6.3,2026-06-03) =====
-    # v6.11: 妙查退避检查 - 403 后 30 分钟内跳过,避免反复触发配额
-    if now < _mc_blocked_until:
-        remaining = int(_mc_blocked_until - now)
-        logger.debug(f"[MoneyFlow] 妙查退避中,跳过(剩余{remaining}s): {code}")
-    else:
-        logger.info("[MoneyFlow] 东方财富不可用，尝试妙想数据(mx-finance-data)...")
-        mc_data = get_money_flow_via_miaochang(code, name)
-        if mc_data:
-            logger.info(f"[MoneyFlow] 妙想数据获取成功: 主力净流入={mc_data['main_net']:.0f}万")
-            result = MoneyFlowData(
+    # 2️⃣ 主源:妙想数据 (实时, 字段全)
+    mc_data = get_money_flow_via_miaochang(code, name)
+    if mc_data:
+        logger.info(f"[MoneyFlow] 妙想数据获取成功: 主力净流入={mc_data['main_net']:.0f}万")
+        result = MoneyFlowData(
             code=mc_data["code"],
             name=mc_data["name"],
             main_net=mc_data["main_net"],
@@ -271,113 +141,42 @@ def get_money_flow(code: str, name: str = "") -> Optional[MoneyFlowData]:
             super_in=mc_data["super_in"],
             super_out=mc_data["super_out"],
             small_net=mc_data["small_net"],
-                mid_net=mc_data.get("mid_net", 0.0),
-                ddx=mc_data["ddx"],
-                ddy=mc_data["ddy"],
-                date=mc_data.get("date", ""),
-            )
-            _cache[code] = (now, result)  # v6.11: 缓存
-            _mc_blocked_until = 0.0  # 成功后清退避
-            return result
-        else:
-            # v6.11: 妙查 403 触发退避
-            _mc_blocked_until = now + MC_BACKOFF_SECONDS
-            logger.warning(f"[MoneyFlow] 妙查失败,触发 {MC_BACKOFF_SECONDS}s 退避")
+            mid_net=mc_data.get("mid_net", 0.0),
+            ddx=mc_data["ddx"],
+            ddy=mc_data["ddy"],
+            date=mc_data.get("date", ""),
+        )
+        _cache[code] = (now, result)
+        return result
+
+    # 3️⃣ 兜底:push2delay (15 分钟延迟, 字段不全)
+    if fetch_public_flow:
+        try:
+            pub_data = fetch_public_flow(code, name)
+            if pub_data:
+                logger.info(f"[MoneyFlow] push2delay 兜底成功: 主力净流入={pub_data['main_net']:+.0f}万")
+                result = MoneyFlowData(
+                    code=pub_data["code"],
+                    name=pub_data["name"],
+                    main_net=pub_data["main_net"],
+                    main_in=0.0,        # push2delay 不提供
+                    main_out=0.0,
+                    big_net=pub_data["big_net"],
+                    big_in=0.0,
+                    big_out=0.0,
+                    super_net=pub_data["super_net"],
+                    super_in=0.0,
+                    super_out=0.0,
+                    small_net=pub_data["small_net"],
+                    mid_net=pub_data["mid_net"],
+                    ddx=0.0,            # push2delay 不提供
+                    ddy=0.0,
+                    date=pub_data["date"],
+                )
+                _cache[code] = (now, result)
+                return result
+        except Exception as e:
+            logger.warning(f"[MoneyFlow] push2delay 兜底失败: {e}")
 
     logger.warning(f"[MoneyFlow] 全部资金流获取方式均失败: code={code}")
     return None
-
-
-def _is_push2healthy() -> bool:
-    """
-    v6.11: push2delay 端点健康探测
-    5 分钟内复用同一结果,避免每个请求都打探活
-    失败时返回 False,让 Step 0 跳过,直接走东财/妙查
-    """
-    global _push2_healthy, _push2_last_check
-    now = time.time()
-    if _push2_healthy is not None and (now - _push2_last_check) < PUSH2_HEALTH_CHECK_TTL:
-        return _push2_healthy
-    try:
-        import requests as _req
-        r = _req.get(
-            "https://push2delay.eastmoney.com/api/qt/stock/fflow/daykline/get",
-            params={"lmt": 1, "klt": 101, "secid": "0.000001",  # 沪指,避免污染数据
-                    "fields1": "f1,f2,f3,f4", "fields2": "f51,f52,f53,f54,f55,f56,f57,f58"},
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=5,
-        )
-        import json as _json
-        d = _json.loads(r.text)
-        _push2_healthy = (d.get("rc") == 0 and d.get("data") is not None)
-    except Exception as e:
-        logger.debug(f"[MoneyFlow] push2delay 健康探测失败: {e}")
-        _push2_healthy = False
-    _push2_last_check = now
-    if not _push2_healthy:
-        logger.info("[MoneyFlow] push2delay 端点不健康,跳过 Step 0")
-    return _push2_healthy
-
-
-def _get_money_flow_eastmoney(code: str, name: str = "") -> Optional[MoneyFlowData]:
-    """东方财富资金流获取（内部函数）"""
-    normalized = code
-    for p in ("sh", "sz", "SH", "SZ"):
-        if normalized.startswith(p):
-            normalized = normalized[2:]
-
-    question = (
-        f"获取{normalized}（{name}）今日资金流向，"
-        "包括主力净流入、大单净流入、超大单净流入、DDX、DDY等指标的具体数值（万元）"
-    )
-
-    try:
-        async def _fetch():
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    API_URL,
-                    json={"question": question},
-                    headers={
-                        "Content-Type": "application/json",
-                        "em_api_key": API_KEY,
-                        "Accept": "application/json",
-                        "User-Agent": "mx-financial-assistant/1.0",
-                    },
-                )
-                return resp.json()
-
-        result = asyncio.run(_fetch())
-
-        if result.get("code") != 200:
-            logger.error(f"[EM] 资金流 API 返回错误: {result}")
-            return None
-
-        ref_list = result.get("data", {}).get("refIndexList", [])
-        vals = _parse_markdown_tables(ref_list)
-
-        if not vals:
-            logger.warning(f"[EM] 未解析到资金流数据: code={code}")
-            return None
-
-        return MoneyFlowData(
-            code=normalized,
-            name=name or normalized,
-            main_net=vals.get("主力净流入", 0.0),
-            main_in=vals.get("主力流入", 0.0),
-            main_out=vals.get("主力流出", 0.0),
-            big_net=vals.get("大单净流入", 0.0),
-            big_in=vals.get("大单流入", 0.0),
-            big_out=vals.get("大单流出", 0.0),
-            super_net=vals.get("超大单净流入", 0.0),
-            super_in=vals.get("超大单流入", 0.0),
-            super_out=vals.get("超大单流出", 0.0),
-            small_net=vals.get("小单净流入", 0.0),
-            mid_net=0.0,
-            ddx=vals.get("DDX", 0.0),
-            ddy=vals.get("DDY", 0.0),
-            date="",
-        )
-
-    except Exception as e:
-        logger.error(f"[EM] 获取资金流数据异常: {e}")
-        return None

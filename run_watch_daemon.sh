@@ -48,8 +48,8 @@ is_trading_hours() {
     if [ "$now" -ge "1000" ] && [ "$now" -lt "1130" ]; then
         return 0
     fi
-    # 下午 13:00-15:00
-    if [ "$now" -ge "1300" ] && [ "$now" -lt "1500" ]; then
+    # 下午 13:00-15:00 (含 15:00 整点,A 股 15:00 收盘那刻需最后一次扫描)
+    if [ "$now" -ge "1300" ] && [ "$now" -lt "1501" ]; then
         return 0
     fi
     return 1
@@ -76,6 +76,8 @@ if ! is_trading_day; then
     exit 0
 fi
 
+# 早盘边界保护:09:15 之前的"非交易时间"杀掉进程后,09:15-10:00 期间需要重新拉起
+# 守护脚本每 5 分钟跑一次,只要 is_trading_hours 命中就会自动启动
 if is_trading_hours; then
     # 交易时间内:确保 watch 进程在跑
     need_start=0
