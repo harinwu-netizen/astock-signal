@@ -20,7 +20,7 @@ def calculate_buy_cost(amount: float) -> dict:
     计算买入成本
 
     Args:
-        amount: 买入金额（price × quantity × 100）
+        amount: 买入金额（price × quantity_lots × 100）
 
     Returns:
         dict: {
@@ -47,7 +47,7 @@ def calculate_sell_cost(amount: float) -> dict:
     计算卖出成本（含佣金+印花税+滑点）
 
     Args:
-        amount: 卖出金额（price × quantity × 100）
+        amount: 卖出金额（price × quantity_lots × 100）
 
     Returns:
         dict: {
@@ -75,12 +75,12 @@ def calculate_sell_cost(amount: float) -> dict:
     }
 
 
-def check_volume_limit(quantity: int, daily_volume: int) -> tuple:
+def check_volume_limit(quantity_lots: int, daily_volume: int) -> tuple:
     """
     检查成交量限制
 
     Args:
-        quantity: 拟交易数量（手）
+        quantity_lots: 拟交易数量（手）
         daily_volume: 当日成交量（手）
 
     Returns:
@@ -88,12 +88,12 @@ def check_volume_limit(quantity: int, daily_volume: int) -> tuple:
     """
     max_allowed = int(daily_volume * MAX_VOLUME_RATIO)
     if daily_volume <= 0:
-        return True, quantity, "停牌或成交量为0，跳过检查"
+        return True, quantity_lots, "停牌或成交量为0，跳过检查"
 
-    if quantity <= max_allowed:
-        return True, quantity, f"成交量限制通过（{quantity}手 ≤ {max_allowed}手上限）"
+    if quantity_lots <= max_allowed:
+        return True, quantity_lots, f"成交量限制通过（{quantity_lots}手 ≤ {max_allowed}手上限）"
     else:
-        return False, max_allowed, f"超过成交量限制（{quantity}手 > {max_allowed}手上限），调整为{max_allowed}手"
+        return False, max_allowed, f"超过成交量限制（{quantity_lots}手 > {max_allowed}手上限），调整为{max_allowed}手"
 
 
 def calc_real_buy_price(price: float) -> float:

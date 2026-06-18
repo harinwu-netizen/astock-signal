@@ -246,7 +246,7 @@ class LLMAnalyzer:
         name = trade.get("name", "")
         code = trade.get("code", "")
         price = trade.get("price", 0)
-        quantity = trade.get("quantity", 0)
+        quantity_lots = trade.get("quantity_lots", 0)
         amount = trade.get("amount", 0)
         buy_signals = trade.get("buy_signals", 0)
         sell_signals = trade.get("sell_signals", 0)
@@ -265,7 +265,7 @@ class LLMAnalyzer:
 - 股票: {name}（{code}）
 - 操作: {action_desc}
 - 成交价: ¥{price:.2f}
-- 数量: {quantity}手（{quantity*100}股）
+- 数量: {quantity_lots}手（{quantity_lots*100}股）
 - 金额: ¥{amount:,.0f}
 - 触发信号: 买{buy_signals}/卖{sell_signals}
 - 原因: {reason}

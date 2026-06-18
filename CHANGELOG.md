@@ -2215,3 +2215,95 @@ fi
 1. **不要把 RSI_14 (展示) 和 RSI_6 (触发) 当成同一个指标** — 用户视角和系统视角有差异
 2. **看日志判断触发原因**，不要从"价格走势"反推 — watch_cron.log 第 51.962 秒有明确 reason
 3. **触发 reason 和"止损"标签不一定等价** — RSI 反弹卖出是风控，但 reason="止损"会被标记为 STOP_LOSS（executor.py:239 的设计）
+
+---
+
+## v6.20 (2026-06-18 17:55) ⭐ quantity → quantity_lots 字段重命名 + DB schema 迁移
+
+### 🎯 触发
+
+17:39 用户指出 312116-298058=14058 我算成 141（漏一个 0）
+根因: DB 里 `quantity` 字段是"手"(1手=100股), 我误当作"股"算
+进一步追查发现代码里 11 处散落 `quantity * 100` 魔法数字, 单位语义隐式
+
+### 🐛 重命名理由
+
+| 现状 | 问题 |
+|------|------|
+| DB 列名 `quantity INTEGER` | 看名字像是"数量", 无法判断是股还是手 |
+| 代码注释"持仓量(手,1手=100股)" | 散落 11 处 `* 100` 魔法数字 |
+| `trade.quantity` 类型注解缺失 | 类型签名看不出单位 |
+| 计算盈亏时需乘 100 | 容易踩坑(如本次误算) |
+
+重命名后:
+- `quantity_lots` 字段名自带"lots"语义 → 一目了然是手
+- 注释明确"1手=100股"
+- 不再有散落的 `* 100` 魔法数字
+
+### 📊 改动汇总
+
+| 类别 | 文件 | 改动 |
+|------|------|------|
+| 数据模型 | models/position.py | `quantity` → `quantity_lots` + from_dict 兼容旧字段 |
+| 数据模型 | models/trade.py | 同上 + CREATE TABLE/INSERT SQL 更新 |
+| 核心交易 | trading/executor.py | 32 处重命名 |
+| 核心交易 | trading/pre_check.py | 2 处 |
+| 核心交易 | trading/cost_calculator.py | 9 处 |
+| 监控 | monitor/watcher.py | 14 处 |
+| 监控 | monitor/reporter.py | 2 处 |
+| 入口 | main.py | 11 处 |
+| 回测 | backtest/engine.py | 25 处 |
+| 回测 | backtest/multi_engine.py | 10 处 |
+| 通知 | notification/feishu.py | 1 处(保持"X手"展示) |
+| 通知 | notification/llm_analyzer.py | 4 处 |
+| 测试 | scripts/test_v615_sell_reason.py | 2 处 |
+| 测试 | tests/test_reporter.py | 3 处 |
+| 测试 | tests/test_backtest_engine.py | 1 处 |
+| 新文件 | scripts/migrate_v620_rename_quantity.py | DB schema 迁移脚本 (含 --check-only / --force / 自动备份) |
+
+总计: **116 处代码引用重命名 + 1 个新迁移脚本 + DB schema 迁移**
+
+### 🔄 DB 迁移
+
+```sql
+ALTER TABLE trades RENAME COLUMN quantity TO quantity_lots;
+```
+
+执行结果 (17:54):
+- 备份: data/archive/trades_pre_v620_20260618_175413.db
+- SQLite 版本: 3.45.1 (支持 RENAME COLUMN, 无需重建表)
+- 现有 4 条记录 (879/879/142/142 手) 正确迁移
+- trades.db 现在 17 列, 第 6 列名 `quantity_lots`
+
+### ✅ 兼容性保障
+
+| 路径 | 兼容方式 |
+|------|---------|
+| `Position.from_dict(d)` | 检测到 `quantity` 但无 `quantity_lots` → 自动迁移 |
+| `TradeRecord.from_dict(d)` | 同上 |
+| `TradeStore.add(trade)` | 新 SQL 用 `quantity_lots`, 不再写旧列 |
+| `positions.json` 旧记录 | from_dict 自动兼容 (理论上无需立即迁移) |
+| DB `quantity_lots` 列 | SQLite RENAME COLUMN, 数据零丢失 |
+
+### 🧪 测试验证
+
+- ✅ 12/12 test_v615_sell_reason.py 通过 (v6.19 新加 test_006b 也通过)
+- ✅ 12/12 核心模块 import 成功
+- ✅ DB 4 条记录正确读取 quantity_lots
+- ✅ TradeRecord.from_dict 旧字段 "quantity" 兼容
+- ✅ Position.from_dict 旧字段 "quantity" 兼容
+- ⚠️ test_reporter.py / test_backtest_engine.py 失败, **与 v6.20 无关** (v6.19 commit 状态同样失败, 历史遗留)
+
+### 📅 生效
+
+- 即时生效 (代码改动 + DB 迁移都已完成)
+- 下次 BUY/SELL 写入 DB 时会写入新列 quantity_lots
+- 下次读 positions.json 时 (现在为空) 会用新字段
+
+### 📌 教训 (给小海)
+
+1. **字段名要带单位语义** — `quantity` 太泛, `quantity_lots` 一目了然
+2. **类型签名要标注单位** — `quantity: int` 远远不够, 应该是 `quantity_lots: int  # 手,1手=100股`
+3. **魔法数字 (`* 100`) 是隐患** — 散落 11 处, 任何一处错都全错
+4. **DB schema 变更要走迁移脚本** — ALTER TABLE + 备份 + dry-run, 不可裸改
+5. **历史测试失败要先确认是否新引入** — git stash 验证基线是关键

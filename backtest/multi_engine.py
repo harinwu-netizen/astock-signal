@@ -39,7 +39,7 @@ class MultiPosition:
     name: str
     buy_date: str
     buy_price: float
-    quantity: int
+    quantity_lots: int
     cost: float
     atr: float = 0.0
     atr_multiplier: float = 2.0
@@ -59,7 +59,7 @@ class MultiPosition:
         return (current_price - self.buy_price) / self.buy_price * 100
 
     def market_value(self, current_price: float) -> float:
-        return current_price * self.quantity * 100
+        return current_price * self.quantity_lots * 100
 
     @classmethod
     def create(cls, code, name, buy_date, buy_price, qty, cost, atr,
@@ -76,7 +76,7 @@ class MultiPosition:
 
         return cls(
             code=code, name=name, buy_date=buy_date,
-            buy_price=buy_price, quantity=qty, cost=cost,
+            buy_price=buy_price, quantity_lots=qty, cost=cost,
             atr=atr, atr_multiplier=atr_mult,
             stop_loss_pct=sl_pct, take_profit_pct=tp_pct,
             max_hold_days=max_hold,
@@ -320,7 +320,7 @@ class MultiStockBacktestEngine:
                 if triggered:
                     trade_seq += 1
                     sp = calc_real_sell_price(close)
-                    gross = sp * pos.quantity * 100
+                    gross = sp * pos.quantity_lots * 100
                     cost = calculate_sell_cost(gross)
                     pnl = cost["net_proceeds"] - pos.cost
                     hd = (
@@ -337,7 +337,7 @@ class MultiStockBacktestEngine:
                         "buy_price": pos.buy_price,
                         "sell_date": date,
                         "sell_price": sp,
-                        "quantity": pos.quantity,
+                        "quantity_lots": pos.quantity_lots,
                         "pnl": pnl,
                         "hold_days": hd,
                         "reason": triggered[1],
@@ -470,7 +470,7 @@ class MultiStockBacktestEngine:
                             "buy_price": buy_price,
                             "sell_date": "",
                             "sell_price": 0.0,
-                            "quantity": qty,
+                            "quantity_lots": qty,
                             "pnl": 0.0,
                             "hold_days": 0,
                             "reason": reason_str,
@@ -531,7 +531,7 @@ class MultiStockBacktestEngine:
             last_close = last_prices.get(pos.code, pos.buy_price)
             trade_seq += 1
             sp = calc_real_sell_price(last_close)
-            gross = sp * pos.quantity * 100
+            gross = sp * pos.quantity_lots * 100
             cost = calculate_sell_cost(gross)
             pnl = cost["net_proceeds"] - pos.cost
             hd = (
@@ -548,7 +548,7 @@ class MultiStockBacktestEngine:
                 "buy_price": pos.buy_price,
                 "sell_date": last_date,
                 "sell_price": sp,
-                "quantity": pos.quantity,
+                "quantity_lots": pos.quantity_lots,
                 "pnl": pnl,
                 "hold_days": hd,
                 "reason": "回测结束",

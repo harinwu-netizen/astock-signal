@@ -41,7 +41,7 @@ class BTTrade:
     code: str
     name: str
     price: float
-    quantity: int
+    quantity_lots: int
     amount: float         # 净成交金额（含手续费）
     commission: float    # 手续费合计
     pnl: float = 0.0
@@ -56,7 +56,7 @@ class BTTrade:
         return {
             "seq": self.seq, "date": self.date, "action": self.action,
             "code": self.code, "name": self.name,
-            "price": self.price, "quantity": self.quantity,
+            "price": self.price, "quantity_lots": self.quantity_lots,
             "amount": round(self.amount, 2),
             "commission": round(self.commission, 2),
             "pnl": round(self.pnl, 2),
@@ -77,7 +77,7 @@ class BTPosition:
     buy_date: str
     buy_price: float
     buy_commission: float   # 买入手续费（含滑点）
-    quantity: int
+    quantity_lots: int
     stop_loss: float
     take_profit: float
     trailing_stop: float
@@ -95,10 +95,10 @@ class BTPosition:
     ma20_take_profit: float = 0.0     # 弱市MA20止盈目标价（v4.1新增）
 
     def market_value(self, current_price: float) -> float:
-        return current_price * self.quantity * 100
+        return current_price * self.quantity_lots * 100
 
     def cost_basis(self) -> float:
-        return self.buy_price * self.quantity * 100 + self.buy_commission
+        return self.buy_price * self.quantity_lots * 100 + self.buy_commission
 
     def unrealized_pnl(self, current_price: float) -> float:
         return self.market_value(current_price) - self.cost_basis()
@@ -430,7 +430,7 @@ class BacktestEngine:
             for pos, reason, detail, sig in sell_queue:
                 trade_seq += 1
                 sell_price = calc_real_sell_price(close)
-                gross_amount = sell_price * pos.quantity * 100
+                gross_amount = sell_price * pos.quantity_lots * 100
                 cost = calculate_sell_cost(gross_amount)
                 pnl = cost["net_proceeds"] - pos.cost_basis()
                 hd = (datetime.strptime(date, "%Y-%m-%d") -
@@ -439,7 +439,7 @@ class BacktestEngine:
                 trades.append(BTTrade(
                     seq=trade_seq, date=date, action=reason,
                     code=pos.code, name=pos.name,
-                    price=sell_price, quantity=pos.quantity,
+                    price=sell_price, quantity_lots=pos.quantity_lots,
                     amount=cost["net_proceeds"],
                     commission=cost["total_cost"],
                     pnl=pnl, hold_days=hd,
@@ -454,10 +454,10 @@ class BacktestEngine:
                     "seq": trade_seq,
                     "buy_date": pos.buy_date,
                     "buy_price": pos.buy_price,
-                    "buy_quantity": pos.quantity,
+                    "buy_quantity": pos.quantity_lots,
                     "sell_date": date,
                     "sell_price": sell_price,
-                    "sell_quantity": pos.quantity,
+                    "sell_quantity": pos.quantity_lots,
                     "pnl": pnl,
                     "hold_days": hd,
                     "reason": detail,
@@ -514,11 +514,11 @@ class BacktestEngine:
                 position_ratio = max(position_ratio, 0.05)  # 最低5%
 
                 max_amount = cash * position_ratio
-                quantity = max(1, int(max_amount / (buy_price * 100)))
+                quantity_lots = max(1, int(max_amount / (buy_price * 100)))
 
                 # 成交量检查
-                valid_qty, quantity, _ = check_volume_limit(quantity, volume)
-                if quantity < 1:
+                valid_qty, quantity_lots, _ = check_volume_limit(quantity_lots, volume)
+                if quantity_lots < 1:
                     equity_curve.append({
                         "date": date,
                         "capital": cash + sum(p.market_value(close) for p in positions),
@@ -526,7 +526,7 @@ class BacktestEngine:
                     })
                     continue
 
-                gross_amount = buy_price * quantity * 100
+                gross_amount = buy_price * quantity_lots * 100
                 cost = calculate_buy_cost(gross_amount)
 
                 if cost["total_cost"] > cash:
@@ -541,7 +541,7 @@ class BacktestEngine:
                 trades.append(BTTrade(
                     seq=trade_seq, date=date, action="BUY",
                     code=code, name=name,
-                    price=buy_price, quantity=quantity,
+                    price=buy_price, quantity_lots=quantity_lots,
                     amount=cost["total_cost"],
                     commission=cost["commission"] + cost["slippage_cost"],
                     reason=f"决策买入[{market_status.value}] 反弹{int(signal.rebound_count)}/趋势{int(signal.trend_count)}/经典{int(signal.buy_count)}",
@@ -572,7 +572,7 @@ class BacktestEngine:
                     code=code, name=name, buy_date=date,
                     buy_price=buy_price,
                     buy_commission=cost["commission"] + cost["slippage_cost"],
-                    quantity=quantity,
+                    quantity_lots=quantity_lots,
                     stop_loss=stop_loss,
                     take_profit=take_profit,
                     trailing_stop=stop_loss,
@@ -607,7 +607,7 @@ class BacktestEngine:
         for pos in list(positions):
             trade_seq += 1
             sell_price = calc_real_sell_price(last_close)
-            gross_amount = sell_price * pos.quantity * 100
+            gross_amount = sell_price * pos.quantity_lots * 100
             cost = calculate_sell_cost(gross_amount)
             pnl = cost["net_proceeds"] - pos.cost_basis()
             hd = (datetime.strptime(last_date, "%Y-%m-%d") -
@@ -616,7 +616,7 @@ class BacktestEngine:
             trades.append(BTTrade(
                 seq=trade_seq, date=last_date, action="最后平仓",
                 code=pos.code, name=pos.name,
-                price=sell_price, quantity=pos.quantity,
+                price=sell_price, quantity_lots=pos.quantity_lots,
                 amount=cost["net_proceeds"],
                 commission=cost["total_cost"],
                 pnl=pnl, hold_days=hd,
@@ -630,10 +630,10 @@ class BacktestEngine:
                 "seq": trade_seq,
                 "buy_date": pos.buy_date,
                 "buy_price": pos.buy_price,
-                "buy_quantity": pos.quantity,
+                "buy_quantity": pos.quantity_lots,
                 "sell_date": last_date,
                 "sell_price": sell_price,
-                "sell_quantity": pos.quantity,
+                "sell_quantity": pos.quantity_lots,
                 "pnl": pnl,
                 "hold_days": hd,
                 "reason": "回测结束平仓",

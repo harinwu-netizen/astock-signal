@@ -206,7 +206,7 @@ class FeishuNotifier:
             "",
             f"**{trade.get('name', '')} ({trade.get('code', '')})**",
             f"价格: ¥{trade.get('price', 0):.2f}",
-            f"数量: {trade.get('quantity', 0)}手",
+            f"数量: {trade.get('quantity_lots', 0)}手",
             f"金额: ¥{trade.get('amount', 0):,.0f}",
             "",
             f"信号: 买{trade.get('buy_signals', 0)}/卖{trade.get('sell_signals', 0)}",

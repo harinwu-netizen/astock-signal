@@ -29,7 +29,7 @@ def make_position(
     p = Position(
         id="test-id", code=code, name=name,
         buy_date=buy_date, buy_price=buy_price,
-        quantity=142.0, cost=298058.0,
+        quantity_lots=142.0, cost=298058.0,
         stop_loss=stop_loss, stop_loss_pct=stop_loss_pct,
         market_regime=market_regime,
     )
@@ -180,7 +180,7 @@ def test_010_real_002202_dict():
         "id": "e3e27861-5e34-47ff-b69c-b6aa050ad351",
         "code": "sz002202", "name": "金风科技",
         "buy_date": "2026-06-15", "buy_price": 20.99,
-        "quantity": 142.0, "cost": 298058.0,
+        "quantity_lots": 142.0, "cost": 298058.0,
         "current_price": 20.99, "unrealized_pnl": 0.0, "pnl_pct": 0.0,
         "stop_loss": 20.36, "take_profit": 22.6692, "trailing_stop": 20.36,
         "latest_buy_signals": 1, "latest_sell_signals": 0,

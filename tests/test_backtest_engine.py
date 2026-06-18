@@ -58,7 +58,7 @@ def test_trade_structure():
         assert hasattr(t, "date")
         assert hasattr(t, "action")
         assert hasattr(t, "price")
-        assert hasattr(t, "quantity")
+        assert hasattr(t, "quantity_lots")
         assert hasattr(t, "pnl")
         assert hasattr(t, "hold_days")
     print(f"✅ test_trade_structure: {len(result.trades)}条交易记录结构正确")

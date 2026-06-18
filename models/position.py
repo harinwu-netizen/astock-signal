@@ -25,7 +25,7 @@ class Position:
     # 建仓信息
     buy_date: str        # 建仓日期 "YYYY-MM-DD"
     buy_price: float     # 买入价
-    quantity: int        # 持仓量（手，1手=100股）
+    quantity_lots: int  # 持仓量（手，1手=100股；v6.20 重命名，原 quantity）
     cost: float          # 总成本（含手续费）
 
     # 当前状态
@@ -60,7 +60,7 @@ class Position:
     def update_current(self, current_price: float):
         """更新当前价格和盈亏"""
         self.current_price = current_price
-        self.unrealized_pnl = (current_price - self.buy_price) * self.quantity * 100
+        self.unrealized_pnl = (current_price - self.buy_price) * self.quantity_lots * 100
         self.pnl_pct = (current_price - self.buy_price) / self.buy_price * 100
 
     def to_dict(self) -> dict:
@@ -90,6 +90,9 @@ class Position:
             except ValueError:
                 # 按name查找（如 'CONSOLIDATE' → MarketStatus.CONSOLIDATE）
                 d["market_regime"] = MarketStatus[mr]
+        # v6.20: 兼容旧版 quantity 字段（→ quantity_lots）
+        if "quantity" in d and "quantity_lots" not in d:
+            d["quantity_lots"] = d.pop("quantity")
         return cls(**d)
 
 

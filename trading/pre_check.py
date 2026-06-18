@@ -67,7 +67,7 @@ class PreTradeChecker:
             self._market_filter = get_market_filter()
         return self._market_filter
 
-    def check(self, action: str, code: str, price: float, quantity: int,
+    def check(self, action: str, code: str, price: float, quantity_lots: int,
               amount: float, market_status: MarketStatus,
               market_change_pct: float,
               kline_history: Optional[List[dict]] = None) -> CheckResult:
@@ -78,7 +78,7 @@ class PreTradeChecker:
             action: BUY / SELL / STOP_LOSS
             code: 股票代码
             price: 交易价格
-            quantity: 交易数量（手）
+            quantity_lots: 交易数量（手）
             amount: 交易金额
             market_status: 大盘状态
             market_change_pct: 大盘涨跌幅（已废弃，改用market_filter的联合判断）

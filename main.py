@@ -532,16 +532,16 @@ def _handle_auto_trade(signal, history, realtime, market_status):
         amount = int(amount // 100) * 100
         if amount < 1000:
             return  # 金额太小不交易
-        quantity = amount // (price * 100)  # 手数
-        if quantity < 1:
+        quantity_lots = amount // (price * 100)  # 手数
+        if quantity_lots < 1:
             return
 
         # 交易前检查
-        result = checker.check("BUY", code, price, quantity, amount,
+        result = checker.check("BUY", code, price, quantity_lots, amount,
                              market_status, signal.market_change_pct)
 
         if result.passed:
-            print(f"\n  🤖 自动交易检查通过，准备买入 {quantity} 手")
+            print(f"\n  🤖 自动交易检查通过，准备买入 {quantity_lots} 手")
             # 创建持仓记录（模拟撮合）
             atr = signal.atr
             floor_map = {"WEAK": 0.03, "STRONG": 0.15, "CONSOLIDATE": 0.10}
@@ -554,7 +554,7 @@ def _handle_auto_trade(signal, history, realtime, market_status):
                 name=signal.name,
                 buy_date=datetime.now().strftime("%Y-%m-%d"),
                 buy_price=price,
-                quantity=quantity,
+                quantity_lots=quantity_lots,
                 cost=amount,
                 stop_loss=stop_loss,
                 atr=atr,
@@ -574,7 +574,7 @@ def _handle_auto_trade(signal, history, realtime, market_status):
                 name=signal.name,
                 action="BUY",
                 price=price,
-                quantity=quantity,
+                quantity_lots=quantity_lots,
                 amount=amount,
                 commission=amount * 0.00025,
                 stamp_tax=0,
@@ -589,7 +589,7 @@ def _handle_auto_trade(signal, history, realtime, market_status):
             )
             TradeStore().add(trade)
 
-            print(f"  ✅ 已建仓: {quantity}手 @{price:.2f}，止损¥{stop_loss:.2f}")
+            print(f"  ✅ 已建仓: {quantity_lots}手 @{price:.2f}，止损¥{stop_loss:.2f}")
 
             # 发送通知
             notifier = get_feishu_notifier()
@@ -640,7 +640,7 @@ def cmd_position(code: str = ""):
 
     for p in positions:
         print(f"\n  {p.name} ({p.code})")
-        print(f"    建仓: {p.buy_date} @{p.buy_price:.2f} × {p.quantity}手 = ¥{p.cost:,.0f}")
+        print(f"    建仓: {p.buy_date} @{p.buy_price:.2f} × {p.quantity_lots}手 = ¥{p.cost:,.0f}")
         print(f"    现价: ¥{p.current_price:.2f} ({p.pnl_pct:+.2f}%)")
         print(f"    盈亏: {p.unrealized_pnl:+,.0f}")
         print(f"    止损: ¥{p.stop_loss:.2f}")
@@ -675,7 +675,7 @@ def cmd_report():
     if today_trades:
         for t in today_trades:
             action_emoji = {"BUY": "🟢", "SELL": "🔴", "STOP_LOSS": "🚨"}.get(t.action, "📋")
-            print(f"  {action_emoji} {t.action} {t.name} @{t.price:.2f} × {t.quantity}手")
+            print(f"  {action_emoji} {t.action} {t.name} @{t.price:.2f} × {t.quantity_lots}手")
     else:
         print("  (无交易)")
 

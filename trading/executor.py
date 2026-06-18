@@ -26,7 +26,7 @@ class TradeResult:
     code: str
     name: str
     price: float
-    quantity: int            # 手数
+    quantity_lots: int            # 手数
     amount: float            # 成交金额
     commission: float        # 手续费
     message: str
@@ -55,7 +55,7 @@ class TradeExecutor:
     def execute_buy(
         self,
         signal: RealTimeSignal,
-        quantity: int,
+        quantity_lots: int,
         atr: float = 0,
         market_regime: str = "CONSOLIDATE",
         atr_multiplier: float = 2.0,
@@ -67,7 +67,7 @@ class TradeExecutor:
 
         Args:
             signal: 信号对象
-            quantity: 买入手数
+            quantity_lots: 买入手数
             atr: ATR值
             market_regime: 市场状态（WEAK/CONSOLIDATE/STRONG）
             atr_multiplier: ATR止损倍数
@@ -80,7 +80,7 @@ class TradeExecutor:
         code = signal.code
         name = signal.name
         price = signal.price
-        amount = price * quantity * 100  # 每手100股
+        amount = price * quantity_lots * 100  # 每手100股
 
         # 手续费
         commission = self._calc_buy_commission(amount)
@@ -100,7 +100,7 @@ class TradeExecutor:
                 code=code,
                 name=name,
                 price=price,
-                quantity=quantity,
+                quantity_lots=quantity_lots,
                 amount=amount,
                 commission=commission,
                 message=f"资金不足：需{total_cost:.0f}元，可用{available:.0f}元"
@@ -123,7 +123,7 @@ class TradeExecutor:
             name=name,
             buy_date=datetime.now().strftime("%Y-%m-%d"),
             buy_price=price,
-            quantity=quantity,
+            quantity_lots=quantity_lots,
             cost=amount,  # 不含手续费成本
             current_price=price,
             unrealized_pnl=0,
@@ -156,7 +156,7 @@ class TradeExecutor:
             name=name,
             action="BUY",
             price=price,
-            quantity=quantity,
+            quantity_lots=quantity_lots,
             amount=amount,
             commission=commission,
             stamp_tax=0,
@@ -171,7 +171,7 @@ class TradeExecutor:
         )
         self.trade_store.add(trade)
 
-        logger.info(f"✅ 买入成交: {name} @{price:.2f} × {quantity}手 = ¥{amount:.0f}")
+        logger.info(f"✅ 买入成交: {name} @{price:.2f} × {quantity_lots}手 = ¥{amount:.0f}")
 
         # 触发AI增强分析（异步）
         self._trigger_llm_analysis(trade)
@@ -182,7 +182,7 @@ class TradeExecutor:
             code=code,
             name=name,
             price=price,
-            quantity=quantity,
+            quantity_lots=quantity_lots,
             amount=amount,
             commission=commission,
             message=f"买入成功",
@@ -192,7 +192,7 @@ class TradeExecutor:
     def execute_sell(
         self,
         position: Position,
-        quantity: int,
+        quantity_lots: int,
         reason: str = "",
         signal: RealTimeSignal = None,
     ) -> TradeResult:
@@ -201,14 +201,14 @@ class TradeExecutor:
 
         Args:
             position: 持仓对象
-            quantity: 卖出手数
+            quantity_lots: 卖出手数
             reason: 卖出原因
             signal: 当前信号（可选）
         """
         code = position.code
         name = position.name
         price = position.current_price  # 用当前市场价
-        amount = price * quantity * 100
+        amount = price * quantity_lots * 100
 
         # 手续费（含印花税）
         commission = self._calc_sell_commission(amount)
@@ -218,15 +218,15 @@ class TradeExecutor:
         all_positions = self.position_store.load()
         for i, p in enumerate(all_positions):
             if p.id == position.id:
-                if quantity >= p.quantity:
+                if quantity_lots >= p.quantity_lots:
                     # 完全平仓
                     p.status = "closed"
                     p.closed_at = datetime.now().strftime("%Y-%m-%d %H:%M")
                     p.closed_reason = reason
                 else:
                     # 部分平仓
-                    p.quantity -= quantity
-                    p.cost = p.cost * (p.quantity / (p.quantity + quantity))
+                    p.quantity_lots -= quantity_lots
+                    p.cost = p.cost * (p.quantity_lots / (p.quantity_lots + quantity_lots))
                 break
 
         self.position_store.save(all_positions)
@@ -238,7 +238,7 @@ class TradeExecutor:
             name=name,
             action="SELL" if reason != "止损" else "STOP_LOSS",
             price=price,
-            quantity=quantity,
+            quantity_lots=quantity_lots,
             amount=amount,
             commission=commission,
             stamp_tax=amount * self.stamp_tax,
@@ -254,8 +254,8 @@ class TradeExecutor:
         self.trade_store.add(trade)
 
         # 计算盈亏
-        pnl = total_proceeds - position.cost * (quantity / position.quantity)
-        logger.info(f"{'🔴' if pnl < 0 else '🟢'} 卖出成交: {name} @{price:.2f} × {quantity}手，盈亏{pnl:+,.0f}元")
+        pnl = total_proceeds - position.cost * (quantity_lots / position.quantity_lots)
+        logger.info(f"{'🔴' if pnl < 0 else '🟢'} 卖出成交: {name} @{price:.2f} × {quantity_lots}手，盈亏{pnl:+,.0f}元")
 
         # 触发AI增强分析（异步）
         self._trigger_llm_analysis(trade)
@@ -266,7 +266,7 @@ class TradeExecutor:
             code=code,
             name=name,
             price=price,
-            quantity=quantity,
+            quantity_lots=quantity_lots,
             amount=amount,
             commission=commission,
             message=f"卖出成功，盈亏{pnl:+,.0f}元",
@@ -278,7 +278,7 @@ class TradeExecutor:
         """执行止损"""
         return self.execute_sell(
             position=position,
-            quantity=position.quantity,
+            quantity_lots=position.quantity_lots,
             reason="止损",
         )
 

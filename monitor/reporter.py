@@ -111,7 +111,7 @@ class Reporter:
                 pnl_str = f"盈亏: ¥{t.pnl:+,.0f}" if t.pnl else ""
                 lines.append(
                     f"{emoji} **{t.name}** `{t.action}`\n"
-                    f"   价: ¥{t.price:.2f} × {t.quantity}手 | {pnl_str}\n"
+                    f"   价: ¥{t.price:.2f} × {t.quantity_lots}手 | {pnl_str}\n"
                     f"   买信号{t.buy_signals} | 卖信号{t.sell_signals}\n"
                     f"   原因: {t.reason or '信号触发'}"
                 )
@@ -217,7 +217,7 @@ class Reporter:
                 emoji = "🟢" if t.pnl > 0 else "🔴"
                 lines.append(
                     f"{emoji} {t.name} `{t.action}` ¥{t.price:.2f} "
-                    f"qty={t.quantity} pnl=¥{t.pnl:+,.0f}"
+                    f"qty={t.quantity_lots} pnl=¥{t.pnl:+,.0f}"
                 )
 
         lines.append("")

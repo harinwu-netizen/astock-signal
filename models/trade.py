@@ -22,7 +22,7 @@ class TradeRecord:
     name: str            # 股票名称
     action: str          # BUY / SELL / STOP_LOSS / TAKE_PROFIT
     price: float         # 成交价
-    quantity: int        # 成交量（手）
+    quantity_lots: int  # 成交量（手，1手=100股；v6.20 重命名，原 quantity）
     amount: float        # 成交金额
     commission: float    # 手续费
     stamp_tax: float     # 印花税（卖时）
@@ -40,6 +40,9 @@ class TradeRecord:
 
     @classmethod
     def from_dict(cls, d: dict) -> "TradeRecord":
+        # v6.20: 兼容旧版 quantity 字段
+        if "quantity" in d and "quantity_lots" not in d:
+            d["quantity_lots"] = d.pop("quantity")
         return cls(**d)
 
 
@@ -63,7 +66,7 @@ class TradeStore:
                 name TEXT,
                 action TEXT NOT NULL,
                 price REAL,
-                quantity INTEGER,
+                quantity_lots INTEGER,  -- v6.20: 重命名自 quantity (手数,1手=100股)
                 amount REAL,
                 commission REAL,
                 stamp_tax REAL,
@@ -88,14 +91,14 @@ class TradeStore:
             d = trade.to_dict()
             cursor.execute("""
                 INSERT INTO trades (
-                    id, code, name, action, price, quantity, amount,
+                    id, code, name, action, price, quantity_lots, amount,
                     commission, stamp_tax, buy_signals, sell_signals,
                     atr, stop_loss, position_id, pre_check_passed,
                     created_at, trade_date
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 d["id"], d["code"], d["name"], d["action"], d["price"],
-                d["quantity"], d["amount"], d["commission"], d["stamp_tax"],
+                d["quantity_lots"], d["amount"], d["commission"], d["stamp_tax"],
                 d["buy_signals"], d["sell_signals"], d["atr"], d["stop_loss"],
                 d["position_id"], 1 if d["pre_check_passed"] else 0,
                 d["created_at"], d["trade_date"],

@@ -300,7 +300,7 @@ class Watcher:
 
         适用场景：
           - amount < 1000 静默跳过 (仓位被占用)
-          - quantity < 1 静默跳过
+          - quantity_lots < 1 静默跳过
           - 资金流失败 BUY 降级 WATCH
         """
         try:
@@ -476,7 +476,7 @@ class Watcher:
 
             if take_profit_triggered:
                 logger.warning(f"🎯 触发止盈: {position.name} @{signal.price:.2f} — {sell_reason}")
-                result = executor.execute_sell(position, position.quantity, reason="止盈", signal=signal)
+                result = executor.execute_sell(position, position.quantity_lots, reason="止盈", signal=signal)
                 if result.success and result.pnl is not None:
                     self._update_loss_streak_on_sell(position.code, result.pnl)
                 if self.notifier.enabled:
@@ -504,12 +504,12 @@ class Watcher:
             if sell_ratio <= 0:
                 continue
 
-            quantity = int(position.quantity * sell_ratio)
-            if quantity < 1:
-                quantity = position.quantity  # 至少卖1手
+            quantity_lots = int(position.quantity_lots * sell_ratio)
+            if quantity_lots < 1:
+                quantity_lots = position.quantity_lots  # 至少卖1手
 
-            logger.info(f"🔴 卖出信号: {signal.name} {signal.sell_count}个信号，卖{quantity}手")
-            result = executor.execute_sell(position, quantity, reason="信号卖出", signal=signal)
+            logger.info(f"🔴 卖出信号: {signal.name} {signal.sell_count}个信号，卖{quantity_lots}手")
+            result = executor.execute_sell(position, quantity_lots, reason="信号卖出", signal=signal)
 
             if self.notifier.enabled:
                 self.notifier.send_trade_notification(result.__dict__)
@@ -639,11 +639,11 @@ class Watcher:
                                                    extra={"amount": amount, "position_ratio": position_ratio})
                 continue
 
-            quantity = amount // (signal.price * 100)
-            if quantity < 1:
+            quantity_lots = amount // (signal.price * 100)
+            if quantity_lots < 1:
                 # v6.13: 同样加 log
                 logger.warning(
-                    f"⚠️ [{signal.name}] amount=¥{amount} 但 {signal.price:.2f}×100 后 quantity<1，跳过"
+                    f"⚠️ [{signal.name}] amount=¥{amount} 但 {signal.price:.2f}×100 后 quantity_lots<1，跳过"
                 )
                 self._write_silenced_signal_alert(signal, reason="quantity_too_small",
                                                    extra={"amount": amount, "price": signal.price})
@@ -654,10 +654,10 @@ class Watcher:
             logger.info(
                 f"🟢 买入信号: {signal.name} "
                 f"反弹{int(signal.rebound_count)}/趋势{int(signal.trend_count)}/经典{int(signal.buy_count)} "
-                f"→ 仓位{signal.position_ratio:.0%}，买{quantity}手 @{signal.price:.2f}"
+                f"→ 仓位{signal.position_ratio:.0%}，买{quantity_lots}手 @{signal.price:.2f}"
             )
             result = executor.execute_buy(
-                signal, quantity,
+                signal, quantity_lots,
                 atr=signal.atr,
                 market_regime=regime_str_for_pos,
                 atr_multiplier=atr_multiplier,

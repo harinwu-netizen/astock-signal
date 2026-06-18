@@ -12,12 +12,12 @@ from monitor.reporter import Reporter
 
 
 class FakeTrade:
-    def __init__(self, code, name, action, price, quantity, pnl, buy_signals, sell_signals, trade_date, reason=""):
+    def __init__(self, code, name, action, price, quantity_lots, pnl, buy_signals, sell_signals, trade_date, reason=""):
         self.code = code
         self.name = name
         self.action = action
         self.price = price
-        self.quantity = quantity
+        self.quantity_lots = quantity_lots
         self.pnl = pnl
         self.buy_signals = buy_signals
         self.sell_signals = sell_signals
