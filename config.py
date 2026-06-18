@@ -67,7 +67,7 @@ class Config:
     weak_consecutive_loss_extra_signals: int = 1   # 弱市连续亏损后额外需要的信号数
     weak_consecutive_loss_count: int = 2           # 连续亏损达到N笔时触发
     weak_max_hold_days: int = 3                # 弱市最大持仓天数
-    weak_rsi_sell_threshold: float = 65.0       # 弱市RSI反弹到位阈值
+    weak_rsi_sell_threshold: float = 75.0       # 弱市RSI反弹到位阈值(v6.17: 65→75,避免短线超买敏感触顶)
     weak_single_position_pct: float = 10.0      # 弱市单只仓位上限（%）
     weak_total_position_pct: float = 30.0      # 弱市总仓位上限（%）
     weak_open_window_start: str = "09:30"      # 弱市开仓时间窗口开始（须等走势确认）
@@ -189,7 +189,7 @@ class Config:
             weak_consecutive_loss_extra_signals=int(os.getenv("WEAK_CONSECUTIVE_LOSS_EXTRA_SIGNALS", "1")),
             weak_consecutive_loss_count=int(os.getenv("WEAK_CONSECUTIVE_LOSS_COUNT", "2")),
             weak_max_hold_days=int(os.getenv("WEAK_MAX_HOLD_DAYS", "3")),
-            weak_rsi_sell_threshold=float(os.getenv("WEAK_RSI_SELL_THRESHOLD", "65.0")),
+            weak_rsi_sell_threshold=float(os.getenv("WEAK_RSI_SELL_THRESHOLD", "75.0")),
             weak_single_position_pct=float(os.getenv("WEAK_SINGLE_POSITION_PCT", "10.0")),
             weak_total_position_pct=float(os.getenv("WEAK_TOTAL_POSITION_PCT", "30.0")),
             weak_open_window_start=os.getenv("WEAK_OPEN_WINDOW_START", "09:30"),

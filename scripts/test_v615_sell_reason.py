@@ -52,7 +52,7 @@ def make_cfg():
     cfg.weak_max_hold_days = 3
     cfg.strong_max_hold_days = 30
     cfg.consolidate_max_hold_days = 10
-    cfg.weak_rsi_sell_threshold = 65.0
+    cfg.weak_rsi_sell_threshold = 75.0  # v6.17: 阈值从 65 调到 75
     return cfg
 
 
@@ -120,12 +120,21 @@ def test_005_loss_limit():
 
 
 def test_006_weak_rsi_exit():
-    """条件4: 弱市 RSI 反弹到位(70 > 65)"""
+    """条件4: 弱市 RSI 反弹到位(80 > 75)"""
     p = make_position(market_regime=MarketStatus.WEAK)
-    sig = make_signal(price=20.99, rsi_6=70.0)
+    sig = make_signal(price=20.99, rsi_6=80.0)
     result = call_decide(p, sig, make_cfg())
     assert result and "弱市RSI反弹到位" in result, f"应触发 RSI 反弹, 实际: {result}"
     print(f"✅ test_006 弱市 RSI 反弹: {result}")
+
+
+def test_006b_weak_rsi_below_threshold():
+    """v6.17: RSI 阈值 65→75 后, RSI_6=70 不再触发(避免 6/18 金风 RSI_6=89 误触场景的回测覆盖)"""
+    p = make_position(market_regime=MarketStatus.WEAK)
+    sig = make_signal(price=20.99, rsi_6=70.0)  # 阈值 75 以下
+    result = call_decide(p, sig, make_cfg())
+    assert result is None, f"RSI_6=70 在阈值 75 下不应触发, 实际: {result}"
+    print(f"✅ test_006b RSI_6=70 不触发(v6.17 新阈值 75)")
 
 
 def test_007_no_trigger():
