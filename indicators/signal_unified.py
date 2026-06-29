@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-三层决策路由 v5.0
+三层决策路由 (v5.0 架构 + v6.13 静默修复)
 
-架构：三个独立信号系统 + 智能路由
+架构(v5.0 三个独立信号系统 + 智能路由):
+- 弱市 → 弱市反弹系统(快进快出,RSI+布林+量能)
+- 强市 → 强市趋势系统(趋势跟随,MA+MACD+量价)
+- 震荡 → 震荡波段系统(高抛低吸,布林+RSI+量比)
 
-弱市 → 弱市反弹系统（快进快出，RSI+布林+量能）
-强市 → 强市趋势系统（趋势跟随，MA+MACD+量价）
-震荡 → 震荡波段系统（高抛低吸，布林+RSI+量比）
+v6.13 (2026-06-14) 静默修复叠加:
+- 资金流失败时 BUY 保留 + 降仓 50%(替代 WATCH 降级)
+- amount<1000 不再静默 continue,改写告警
+- 止损独立检查(不依赖 actionable_signals)
 
 每个系统独立计算信号，最终决策由路由层综合决定：
   1. 优先使用当前市场状态对应的系统
@@ -15,7 +19,10 @@
 """
 
 from dataclasses import dataclass, field
+import logging
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 from models.signal import MarketStatus, Decision as EnumDecision
 from indicators.signal_weak import analyze_weak, WeakSignal
 from indicators.signal_strong import analyze_strong, StrongSignal
@@ -243,14 +250,17 @@ def analyze_unified(
         sell_detail = cons_sig.sell_signals
         position_ratio = cons_sig.position_ratio
 
-    # ===== 资金流检查 =====
+    # ===== 资金流检查 (v6.14 改造) =====
+    # 原逻辑：每只股票都调 get_money_flow()，导致妙想配额浪费 93%
+    # 新逻辑：BUY 信号验证推迟到 _handle_buy_signals 阶段（按需调用）
+    # 此处保留 mf_data / mf_fetch_failed 变量定义，下方资金面否决代码保持兼容
     mf_data = None
-    mf_fetch_failed = False  # P1新增：标记获取是否失败
+    mf_fetch_failed = False
     if not skip_money_flow:
-        try:
-            mf_data = get_money_flow(code, name)
-        except Exception:
-            mf_fetch_failed = True  # P1：获取失败时标记，后续按保守策略处理
+        # v6.14: 资金流查询从"扫描时无条件调用"改为"BUY 触发后验证"
+        # 调用方: main.py::_handle_buy_signals 调用 verify_buy_with_money_flow()
+        # 此处不调用，下方 mf_data / mf_fetch_failed 保持 None/False
+        pass
 
     # ===== 跨系统否决机制（仅针对非本市场状态的信号）=====
     # 原则：弱市系统不否决强市，强市系统不否决弱市，只有震荡市的信号才对其他市场有参考价值
@@ -381,3 +391,44 @@ class SignalCounter:
     def _calc_position_ratio(self, signal, market_status=None):
         """兼容：直接返回 position_ratio"""
         return signal.position_ratio
+
+
+# ============================================================================
+# v6.14: BUY 信号资金流验证（按需调用）
+# ============================================================================
+
+def verify_buy_with_money_flow(code: str, name: str = "") -> tuple:
+    """
+    BUY 信号触发后，调用资金流进行二次验证（v6.14 新增）
+
+    设计目标：妙想配额从 ~100次/日 降到 ~10次/日
+    - 扫描时不再无条件调用资金流
+    - 仅当决策=BUY 时才查资金流验证
+    - 验证失败时返回 False，由调用方决定是否记入 evolution 负样本
+
+    Args:
+        code: 股票代码 (sz000629 / sh600519)
+        name: 股票名称（可选，辅助日志）
+
+    Returns:
+        (passed: bool, reason: str, mf_data: MoneyFlowData or None)
+        - passed=True: 资金面验证通过 / 资金流缺失（v6.13 兼容行为）
+        - passed=False: 资金面背离，建议跳过本次 BUY
+    """
+    try:
+        mf = get_money_flow(code, name)
+    except Exception as e:
+        logger.warning(f"[MoneyFlow] 验证异常 (code={code}): {e}")
+        # v6.13 兼容：异常时按"保留 BUY + 降仓"处理
+        return True, "⚠️资金流异常(建议降仓50%)", None
+
+    if mf is None:
+        # 资金流获取失败（端点全部触限）— v6.13 行为：保留 BUY + 降仓
+        return True, "⚠️资金流缺失(建议降仓50%)", None
+
+    # 资金流获取成功：验证主力/大单方向
+    if mf.main_net > 0 or mf.big_net > 0:
+        return True, f"✅资金面验证通过({mf.signal})", mf
+    else:
+        # 资金面背离：建议跳过
+        return False, f"❌资金面否决: 主力净流出{mf.main_net:+.0f}万, 大单{mf.big_net:+.0f}万", mf

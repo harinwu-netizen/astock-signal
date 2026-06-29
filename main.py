@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-astock-signal v6.0 主入口
+astock-signal v6.20 主入口
 A股信号灯 - CLI工具
+
+版本演进:
+- v6.0 (2026-04-27) 自进化 Phase 1~5 全链路
+- v6.1~v6.6 (2026-05~06) 飞书链路/资金流/守护脚本
+- v6.7~v6.13 (2026-06) 扫描间隔/资金流降级/静默修复
+- v6.14~v6.15 (2026-06) 资金流按需查询 + 止损统一
+- v6.16~v6.19 (2026-06) 资金流简化/stats 自动刷新/RSI 阈值
+- v6.20 (2026-06-18) quantity → quantity_lots 字段重命名
 
 用法:
   python main.py pool list              # 查看股票池
@@ -524,6 +532,35 @@ def _handle_auto_trade(signal, history, realtime, market_status):
     position = position_store.find_position(code)
 
     if decision == "BUY" and not position:
+        # ===== v6.14: BUY 资金流按需验证 =====
+        from indicators.signal_unified import verify_buy_with_money_flow
+        mf_passed, mf_reason, mf_data = verify_buy_with_money_flow(code, signal.name)
+        if not mf_passed:
+            # 资金面背离：跳过本次 BUY，记入 evolution 负样本
+            logger.info(f"[{signal.name}] BUY 被资金流否决: {mf_reason}")
+            print(f"  ⚠️ [{signal.name}] 资金流否决本次 BUY: {mf_reason}")
+            # v6.14: 在 signal 上记录资金流否决信息，供 evolution 日志使用
+            signal.money_flow_verified = False
+            signal.money_flow_vetoed = True
+            signal.money_flow_veto_reason = mf_reason
+            if mf_data is not None:
+                signal.money_flow_main_net = mf_data.main_net
+                signal.money_flow_source = getattr(mf_data, 'source', '')
+            try:
+                from evolution.decision_logger import log_decision
+                # 记录原始 BUY 决策 + 资金流否决详情，让 stats_analyzer 能区分
+                log_decision(signal, market_status.value if hasattr(market_status, 'value') else str(market_status), weight_system="old")
+            except Exception as e:
+                logger.debug(f"[Evolution] 记录被否决 BUY 失败: {e}")
+            return
+        # 验证通过：将资金面验证结果附到 signal 上，供后续处理 / 通知使用
+        signal.money_flow_verified = True
+        signal.money_flow_reason = mf_reason
+        if mf_data is not None:
+            signal.money_flow_main_net = mf_data.main_net
+            signal.money_flow_source = getattr(mf_data, 'source', '')
+        # ===== v6.14 end =====
+
         # 准备买入
         # 计算仓位
         position_ratio = signal.position_ratio

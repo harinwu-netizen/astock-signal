@@ -61,6 +61,12 @@ DECISION_FIELDS = [
     "shadow_result_5d",    # 影子5日涨跌%（事后补充）
     "shadow_result_10d",   # 影子10日涨跌%（事后补充）
     "result_filled",       # 是否已补充结果（0/1）
+    # v6.14 新增：资金流验证字段
+    "money_flow_verified",  # BUY 时资金流是否验证 (True/False/"")
+    "money_flow_source",    # 资金流来源 (miaochang/screener/push2delay/None)
+    "money_flow_main_net",  # 主力净流入（万元）
+    "money_flow_vetoed",    # 资金流是否否决 (True/False/"")
+    "money_flow_veto_reason",  # 资金流否决原因
 ]
 
 # 影子日志额外字段
@@ -147,6 +153,12 @@ def log_decision(signal, market_status: str, weight_system: str = "old") -> bool
             "sell_signals_detail": _signal_detail_to_json(signal.sell_signals_detail),
             "decision_reason": signal.primary_reason if hasattr(signal, "primary_reason") else "",
             "weight_system": weight_system,
+            # v6.14 新增字段（资金流验证结果）
+            "money_flow_verified": getattr(signal, "money_flow_verified", "") if isinstance(getattr(signal, "money_flow_verified", ""), (bool, str)) else "",
+            "money_flow_source": getattr(signal, "money_flow_source", ""),
+            "money_flow_main_net": getattr(signal, "money_flow_main_net", 0.0),
+            "money_flow_vetoed": getattr(signal, "money_flow_vetoed", False),
+            "money_flow_veto_reason": getattr(signal, "money_flow_veto_reason", ""),
         }
 
         file_path = SHADOW_LOG if weight_system == "new" else DECISION_LOG

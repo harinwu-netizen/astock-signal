@@ -80,6 +80,14 @@ class TradeStore:
                 trade_date TEXT
             )
         """)
+        # v6.22: 启用 WAL 模式 + synchronous=NORMAL 防止进程被杀时数据丢失
+        # 原理: WAL 模式下写入先写日志文件,主数据库文件只在 checkpoint 时修改
+        # 即使进程被 SIGKILL 杀掉,已写入 WAL 但未提交的数据可以恢复
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            pass
         conn.commit()
         conn.close()
 

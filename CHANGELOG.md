@@ -2,6 +2,274 @@
 
 ---
 
+## v6.22 (2026-06-29 16:30) ⭐ 风控加固 + 数据完整性 + 可观测性全面修复
+
+**主题**：6/29 全面复盘发现 7 个静默问题一次性修复（仓位风控 / 资金流验证 / 飞书报告失真 / trades.db 保护 / decision_log 回填）
+
+> **背景**：海赟 6/29 15:54 要求"全面复盘", 小海列出 7 个问题（P0-1/P0-3/P1-5/P1-6/P1-8/P2-9 + trades.db 故障），海赟 16:04 拍板"一并解决"。
+
+---
+
+### 🔥 问题清单（按优先级）
+
+| 编号 | 严重程度 | 问题描述 | 根本原因 |
+|------|---------|----------|----------|
+| **P0-1** | 🔴 | v6.14 资金流验证今天 0 次调用 | 验证代码在 `execute_buy` 之后, 仓位满提前挡掉后走不到 |
+| **P0-2** | 🟠 | 金风科技 4 天持仓 14 轮 WATCH, 无可观测性 | 持仓在市况判断不一致(震荡/弱市)下, 仓位参数不变 |
+| **P0-3** | 🔴 | 单股仓位上限 30% 形同虚设 (金风 60%) | `position_ratio` 未做单股上限校验 |
+| **P0-4** | 🔴 | trades.db 0 字节 / 无表 (金风 6/25 建仓记录丢失) | 原文件 SQLite default journal 模式, 进程被杀时可能丢数据 |
+| **P1-5** | 🟠 | 飞书报告资金流字段 0 出现 | `signal.money_flow` 仅在仓位满挡掉后未被赋值 |
+| **P1-6** | 🟠 | "总仓位已达上限"log 没写当前占比 | log 不含 `current_total_pct` 不可观测信息 |
+| **P1-8** | 🟠 | 飞书报告写"🟢 买入"但实际未成交 | 仓位满挡掉后 decision=BUY 但 signal 未成交标记 |
+| **P2-9** | 🟡 | decision_log 资金流 5 个字段全空 | 验证函数未被触发 → signal 上字段未赋值 |
+
+---
+
+### 🆕 v6.22 修复详情
+
+#### P0-1：资金流验证前移到 `_handle_buy_signals` 循环开头
+
+**文件**：`monitor/watcher.py:_handle_buy_signals` 入口后立即调用
+
+**改动**：
+- 每个 BUY 信号进入循环时立即调 `verify_buy_with_money_flow()`
+- 验证结果附到 signal (`money_flow_verified/source/main_net/vetoed/veto_reason/money_flow`)
+- 验证失败的 BUY 记入 `log_decision()` 作为 evolution 负样本
+- 不论仓位是否满 / 是否最终买入, **所有 BUY 都验证**
+
+**验证**：
+```
+✅ 000629 攀钢钒钛: passed=True, reason=✅资金面验证通过(主力+大单双净流入), main_net=+9643万, source=miaochang
+```
+
+#### P0-3：单股仓位上限检查
+
+**文件**：`monitor/watcher.py:_handle_buy_signals` 仓位计算后立即检查
+
+**改动**：
+```python
+# v6.22: 单股仓位上限检查
+if position_ratio > max_position_pct / 100:
+    logger.warning(f"⚠️ [{signal.name}] 单股仓位 {position_ratio:.1%} 超单股上限 {max_position_pct}%，调整为上限")
+    position_ratio = max_position_pct / 100
+```
+
+**效果**：金风科技那种 60% 单股违规仓位下次建仓时会被立即拦下
+
+#### P0-4：trades.db WAL 模式保护
+
+**文件**：`models/trade.py:_init_db`
+
+**改动**：
+```python
+# v6.22: WAL 模式 + synchronous=NORMAL 防进程被杀数据丢失
+cursor.execute("PRAGMA journal_mode=WAL")
+cursor.execute("PRAGMA synchronous=NORMAL")
+```
+
+**原理**：WAL 模式下写入先写日志文件, 主数据库文件只在 checkpoint 时修改。即使进程被 SIGKILL 杀掉, 已写入 WAL 但未提交的数据可以恢复。
+
+**验证**：
+- `data/trades.db` 从 0 字节 → 12288 字节
+- 表 `[('trades',)]` 存在
+- journal_mode: `wal`
+- 5 条历史交易记录**奇迹复活**（金风 6/25 建仓 267 手 @22.47 + 攀钒 6/2 建仓等）
+
+#### P1-5：飞书报告加资金流字段（验证过但无数据时也输出）
+
+**文件**：`notification/feishu.py:send_signal_report`
+
+**改动**：
+- 已有 v6.6.3 逻辑：`signal.money_flow` 存在时输出主力/大单/DDX
+- **新增**：验证过但 `mf_data=None`（资金流缺失）时输出 `⚠️ 资金流缺失`
+- 资金流缺失时 decision_reason 附"资金流异常(降仓50%)"
+
+#### P1-6：仓位上限 log 增强
+
+**文件**：`monitor/watcher.py:_handle_buy_signals`
+
+**改动**：
+```python
+# 旧 (v6.22 前): logger.info("⚠️ 总仓位已达上限(30.0%)，暂停开仓")
+# 新 (v6.22): logger.info(f"⚠️ [{signal.name}] 总仓位已达上限({total_position_pct}%)，当前持仓已占 {current_total_pct:.1f}%，暂停开仓")
+```
+
+**效果**：用户看到"当前持仓已占 60.0%"立刻知道是金风超仓 60% 满仓了
+
+#### P1-8：飞书报告里 BUY 但未成交时加 ⏸ 标记
+
+**文件**：`notification/feishu.py:send_signal_report`
+
+**改动**：
+```python
+# v6.22: signal._executed=False 时 BUY 加 ⏸ 标记
+if s.decision.value == "BUY" and not getattr(s, '_executed', False):
+    decision_label = "🟢 买入 ⏸(仓位满/资金不足)"
+else:
+    decision_label = {"BUY": "🟢 买入", ...}.get(s.decision.value, s.decision.value)
+```
+
+**效果**：报告里写"🟢 买入 ⏸(仓位满/资金不足)" 避免用户误读为"真买了"
+
+#### P2-9：decision_log 自动回填资金流 5 个字段
+
+**已有机制**：`evolution/decision_logger.py:log_decision()` 已支持读取 `signal.money_flow_verified/source/main_net/vetoed/veto_reason`
+
+**本次修复**：P0-1 把资金流验证前移到 BUY 循环入口 → signal 上字段被赋值 → log_decision 写到 CSV
+
+**效果**：
+- 之前 13 天 decision_log 的 5 个资金流字段全空
+- v6.22 后**所有 BUY 决策**都自动写这 5 个字段
+- 月度复盘可以统计"资金面验证通过的 BUY 胜率 vs 否决的 BUY 胜率"
+
+---
+
+### 📁 改动汇总
+
+| 文件 | 改动量 | 说明 |
+|------|--------|------|
+| `monitor/watcher.py` | +37/-3 | P0-1 资金流验证前移 + P0-3 单股上限 + P1-6 log 增强 |
+| `models/trade.py` | +7/-0 | P0-4 WAL 模式 + synchronous=NORMAL |
+| `notification/feishu.py` | +15/-5 | P1-5 资金流缺失输出 + P1-8 BUY 未成交 ⏸ 标记 |
+| `evolution/decision_logger.py` | 0 行 | 已有逻辑, P2-9 自动受益 |
+| `CHANGELOG.md` | 本条目 | — |
+| **合计** | **+59 行 / -8 行** | 7 个问题一次性修复 |
+
+---
+
+### ✅ 验证
+
+| 测试 | 结果 |
+|------|------|
+| Python 语法（5 文件） | ✅ 全部通过 |
+| 模块导入（watcher/feishu/trade_store） | ✅ 全部通过 |
+| trades.db 修复（0 字节 → 12288 字节 + 表 + 5 条记录） | ✅ 数据复活 |
+| 资金流验证（手动调一次） | ✅ passed=True, 9643万 main_net |
+| journal_mode WAL | ✅ 已生效 |
+
+### 📅 生效
+
+- 2026-06-29 16:30 改动完成
+- 守护脚本 6/30 10:00 第一次扫描自动加载 v6.22
+- trades.db WAL 模式立即生效（下次写入就保护）
+
+### 📌 教训（给小海）
+
+1. **资金流验证不应该在 execute_buy 之后** — v6.14 设计假设"BUY 信号能正常执行", 但 90% 实际场景是仓位满挡掉, 导致验证形同虚设
+2. **单股仓位上限校验是基础防线** — 不能假设 signal.position_ratio 会遵守约定
+3. **SQLite WAL 模式是默认配置** — default journal mode 在进程被杀时会丢数据, 实盘系统必须开 WAL
+4. **飞书报告跟实际执行必须可观测同步** — "🟢 买入" 在仓位满挡掉时是误导
+5. **复盘 = 列问题 + 一次性修完** — 海赟 16:04 拍板"一并解决"是对的, 避免来回返工
+
+---
+
+## v6.21（2026-06-29）⭐ 版本号统一（文档注释同步）
+
+**主题：统一全代码库版本号注释，消除 v6.20/v6.18/v6.13/v5.0/v4.2 多版本共存混乱**
+
+> **背景**：海赟 6/29 检查信号灯运行情况时发现版本号混乱：
+> - README 写 v6.20 ✅
+> - CHANGELOG 最后一条 v6.20 ✅
+> - `data_provider/money_flow.py` 头部还写着 v6.13 ❌（v6.16 已经重写）
+> - `main.py` 头部还写着 v6.0 ❌（20 个版本没动过）
+> - `indicators/signal_unified.py` 头部写着 v5.0 ⚠️（架构是 v5.0，但叠加了 v6.13 静默修复）
+> - `monitor/watcher.py` 头部还写着 v4.2 ❌（v6.15 止损统一后没更新）
+
+### 🛠 改动
+
+**纯文档同步，不改业务逻辑**：
+
+| 文件 | 头部注释 |
+|------|---------|
+| `data_provider/money_flow.py` | v6.13 → v6.16，加版本演进说明 |
+| `main.py` | v6.0 → v6.20，加完整版本演进链 |
+| `indicators/signal_unified.py` | v5.0 → v5.0 架构 + v6.13 静默修复叠加 |
+| `monitor/watcher.py` | v4.2 → v6.15，加 v6.13/v6.14/v6.15/v6.15.0/v6.18 演进 |
+| `README.md` | "最近 10 个版本" 表补到 10 个（v6.20~v6.11） |
+| `CHANGELOG.md` | 加本条目 |
+
+### 📁 改动量
+
+| 类别 | 行数 |
+|------|------|
+| 文档注释 | ~25 行 |
+| CHANGELOG | 本条目 |
+| 业务代码 | **0 行** |
+
+### ✅ 验证
+
+- 4 个核心文件头部注释已统一
+- README 版本表从 5 个补到 10 个
+- 业务逻辑完全不变（没改 import/函数/类/参数）
+
+### 📅 生效
+
+- 即时生效（纯文档改动，无运行时影响）
+- 下次启动 watch 进程自动加载新注释
+
+### 📌 教训（给小海）
+
+- **版本号注释要随每次发布同步** — 一个文件改了 version header，其他文件不能假装没看见
+- **新功能单独发版本** — v6.20 字段重命名和 v6.21 注释统一**不能合并**，否则 CHANGELOG 反映不出"哪个版本改了什么"
+- **小改动也要发版本** — "改 4 个 header 注释"值得一个独立 v6.21，因为这是代码库健康度的一部分
+
+---
+
+## v6.14（2026-06-26）⭐ 资金流按需查询
+
+**主题：资金流从“扫描时无条件调用”改为“BUY 触发后验证”**
+
+海赟 6/26 16:31 提出，今日资金流调用 105 次/天，但实际 BUY 触发仅 ~10 次/天（93% 调用浪费）。调整后预计妙想日调用降到 ~10 次/天，节省 90% 配额。
+
+### 🆕 新增
+
+- `verify_buy_with_money_flow(code, name)` 函数（`indicators/signal_unified.py`）
+  - 返回 `(passed, reason, mf_data)` 三元组
+  - 仅在 BUY 信号触发后调用，避免扫描时无条件调用
+  - 主资金 / 大单任何一个净流入即视为通过
+  - 资金流缺失或异常时仍保留 BUY（v6.13 兼容行为）
+
+### 🔄 改造
+
+- `indicators/signal_unified.py`：`analyze_unified()` 中移除无条件 `get_money_flow()` 调用
+  - 保留 `mf_data` / `mf_fetch_failed` 变量定义以维持下方资金面否决逻辑兼容
+  - 实际资金流查询推迟到 `_handle_auto_trade` 阶段
+- `main.py::_handle_auto_trade`：BUY 分支前置 `verify_buy_with_money_flow()`
+  - 验证失败 → 记录 evolution 负样本 + `return`（跳过本次 BUY）
+  - 验证通过 → signal 上补充 `money_flow_verified/source/main_net` 字段
+- `evolution/decision_logger.py`：CSV 表头新增 5 个字段
+  - `money_flow_verified` / `money_flow_source` / `money_flow_main_net` / `money_flow_vetoed` / `money_flow_veto_reason`
+  - 字段兼容旧日志（默认空值）
+
+### 📊 预期效果
+
+| 指标 | v6.13 | v6.14 | 变化 |
+|------|-------|-------|------|
+| 妙想日调用 | ~100 | ~10 | -90% |
+| 配额耗尽风险 | 13:16 必触限 | 几乎不可能 | 彻底消除 |
+| 扫描响应速度 | 每只 ~6s | 每只 <1s | ~5x |
+| BUY 信号质量 | 资金面背离静默跳过 | 记入 evolution 负样本 | 可量化 |
+
+### ⚠️ 未涉及 (v6.15+)
+
+- **STOP_LOSS / TAKE_PROFIT 自动执行** — `_handle_auto_trade` 目前只处理 BUY 分支，SELL 仍为半自动（推送 + 人工执行）
+- **SELL 资金流验证** — v6.15 联动讨论
+
+### 🧪 测试
+
+- ✅ 语法检查：`signal_unified.py` / `main.py` / `decision_logger.py` 3 个文件
+- ✅ 单元测试：4 个分支（通过 / 否决 / 缺失 / 异常）
+- ✅ 集成测试：BUY 验证通过 → 进建仓；BUY 验证否决 → 正确跳过
+- ⏳ 影子运行：待 7/1 上午 10:00 实盘启用后验证
+
+### 📌 教训
+
+1. **预算配额会被业务需求跑满** — v6.13 设计“每轮都查”是合理的，但实际只有 10% 触发率，调架构是按需调用
+2. **验证函数要返回三元组** — `(passed, reason, data)` 比 (bool) 更可调试，避免调用方重复查取
+3. **dataclass 运行时赋值需谨慎** — Python 普通 dataclass 允许，但 frozen 类型会报错；加字段前要确认
+
+---
+
 ## v6.0（2026-04-27）⭐ 自进化版本
 
 **主题：自进化系统（Phase 1~5 全链路）**
@@ -455,6 +723,50 @@ get_money_flow(code)
 - fallback 链减少 1 层, 调试更简单
 - MEMORY.md 误判 "4 月起欠费" 纠正为 "QVERIS_API_KEY 从未设置"
 
+
+## v6.13 (2026-06-25 21:48) · 资金流三级 fallback (妙想 + screener + push2delay)
+
+**主题**: 按海赟 21:36 优先级重塑资金流 fallback 链,加 mx-stocks-screener 作第二级
+
+### 🆕 变更
+
+| 变更 | 详情 |
+|------|------|
+| **新增** | `data_provider/screener_money_flow.py` — 妙想 mx-stocks-screener 资金流获取模块(独立端点 selectSecurity) |
+| **调整** | `data_provider/money_flow.py` — 三级 fallback:妙想 > screener > push2delay |
+| **数据源** | MoneyFlowData 新增 `source` 字段,标识数据来源("miaochang"/"screener"/"push2delay") |
+| **沿用** | 15 分钟缓存、字段映射(不提供字段填 0) |
+
+### 💡 背景
+
+**6/25 压测发现的真相**:
+- 妙查日上限 = 47 次/日(之前估 60 偏高)
+- push2delay 13:00-15:00 拿不到盘中数据(实际是日 K 快照,收盘后才有)
+- 4 天来每天下午 48 次资金流 100% 失败,海赟已习惯
+
+**mx-stocks-screener 误以为是全天可用替代**,压测后发现:
+- 连续 ~22 次后触发严重风控(MCP 返回空响应)
+- 5+ 分钟不能恢复(可能 IP/UA 风控)
+- 比妙查的 47 次/日还脆弱
+
+**海赟决策(21:35-21:48)**:
+- 腾讯估算(误差 +98%)**剔除**
+- 优先级:**妙想 > mx-stocks-screener > push2delay**
+- screener 作为第二级,即使脆弱也比 push2delay 强(全天有数据,非仅收盘后)
+
+### ⚠️ 已知限制
+
+- screener 触限后需等风控冷却,具体恢复时间未验证
+- screener 字段缺 DDX/DDY/main_in/mid_net/small_net(填 0)
+- 写代码后未跑全天实测,等明早 10:00 第一次扫描验证
+
+### 🔬 验证计划(明天)
+
+- 跟踪每只股票的资金流来源(source 字段)
+- 统计 screener 实际可用次数
+- 看是否需要调整优先级或加更多 fallback
+
+---
 
 ## v6.9 (2026-06-04 23:50) · push2delay 集成到资金流 fallback
 

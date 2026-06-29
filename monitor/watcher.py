@@ -1,8 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-监控器
-定时监控股票池，支持watch模式和后台运行
-v4.2: 连续止损锁仓机制 + 弱势连续亏损强化买点
+监控器 (v6.15 止损统一重构)
+
+定时监控股票池,支持 watch 模式和后台运行
+
+版本演进:
+- v4.2 (2026-03) 连续止损锁仓机制 + 弱势连续亏损强化买点
+- v6.13 (2026-06-14) 独立止损检查 + amount<1000 告警
+- v6.14 (2026-06-14) TradeResult.pnl 字段修复
+- v6.15 (2026-06-15) 止损逻辑统一(消除重复)+ max_hold_days 崩溃修复
+- v6.15.0 (2026-06-15) is_trading_day() 改用 weekday+节假日表
+- v6.18 (2026-06-16) evolution stats 每日自动刷新
 """
 
 import json
@@ -587,6 +595,43 @@ class Watcher:
             if position_store.find_position(signal.code):
                 continue
 
+            # ===== v6.22: BUY 资金流验证提前到循环开头 =====
+            # 不论仓位是否满、是否最终买入，每个 BUY 信号都先验证资金流
+            # 验证结果写进 signal.money_flow* 字段供后续日志/报告使用
+            try:
+                from indicators.signal_unified import verify_buy_with_money_flow
+                mf_passed, mf_reason, mf_data = verify_buy_with_money_flow(
+                    signal.code, signal.name
+                )
+                signal.money_flow_verified = mf_passed
+                signal.money_flow_reason = mf_reason
+                signal.money_flow_vetoed = not mf_passed
+                if mf_data is not None:
+                    signal.money_flow_main_net = mf_data.main_net
+                    signal.money_flow_source = getattr(mf_data, 'source', '')
+                    # v6.22: 把 MoneyFlowData 对象赋给 signal.money_flow（飞书报告渲染用）
+                    signal.money_flow = mf_data
+                if not mf_passed:
+                    # 资金面背离：跳过本次 BUY，记入 evolution 负样本
+                    logger.info(
+                        f"⚠️ [{signal.name}] BUY 被资金流否决: {mf_reason}"
+                    )
+                    try:
+                        from evolution.decision_logger import log_decision
+                        log_decision(
+                            signal,
+                            market_regime_result.regime.value if hasattr(market_regime_result, 'regime') else str(regime),
+                            weight_system="old",
+                        )
+                    except Exception as e:
+                        logger.debug(f"[Evolution] 记录被否决 BUY 失败: {e}")
+                    continue
+            except Exception as e:
+                logger.warning(f"[MoneyFlow] BUY 验证异常 (code={signal.code}): {e}")
+                signal.money_flow_verified = False
+                signal.money_flow_vetoed = False
+                signal.money_flow_reason = f"⚠️资金流验证异常(降仓50%)"
+
             # 检查同日交易限制
             from models.trade import TradeStore
             trade_store = TradeStore()
@@ -617,8 +662,24 @@ class Watcher:
             open_positions = position_store.get_open_positions()
             current_total_pct = sum(p.cost for p in open_positions) / cfg.total_capital * 100
             remaining_pct = total_position_pct - current_total_pct
+
+            # ===== v6.22: 单股仓位上限检查 =====
+            # 计算本笔仓位占比，转换为总仓位占比
+            # 单股上限 30% 意思是 position_ratio * signal 单股资金占比不能超
+            # 这里直接检查 position_ratio 不能超过 max_position_pct/100
+            if position_ratio > max_position_pct / 100:
+                logger.warning(
+                    f"⚠️ [{signal.name}] 单股仓位 {position_ratio:.1%} 超单股上限 {max_position_pct}%，"
+                    f"调整为上限 {max_position_pct}%"
+                )
+                position_ratio = max_position_pct / 100
+
+            # ===== v6.22: 仓位上限 log 增强 (current_total_pct 可观测) =====
             if remaining_pct <= 0:
-                logger.info(f"⚠️ 总仓位已达上限({total_position_pct}%)，暂停开仓")
+                logger.info(
+                    f"⚠️ [{signal.name}] 总仓位已达上限({total_position_pct}%)，"
+                    f"当前持仓已占 {current_total_pct:.1f}%，暂停开仓"
+                )
                 continue
 
             position_ratio = min(position_ratio, remaining_pct / 100)

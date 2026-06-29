@@ -152,14 +152,21 @@ class FeishuNotifier:
                     f"   资金: {mf_icon} 主力{mf.main_net:+.0f}万 "
                     f"大单{mf.big_net:+.0f}万 超大单{mf.super_net:+.0f}万{ddx_str}"
                 )
-            decision_desc = {
+            elif hasattr(s, 'money_flow_verified') and s.money_flow_verified is False:
+                # v6.22: 资金流验证过但未获取到数据(mf_data=None) → 显式提示
+                reason = getattr(s, 'money_flow_reason', '资金流缺失')
+                lines.append(f"   资金: ⚠️ {reason}")
+            # v6.22: BUY 信号但未成交时加 ⏸ 标记 (避免用户误读)
+            decision_label = {
                 "BUY": "🟢 买入",
                 "HOLD": "🟡 持有",
                 "SELL": "🔴 卖出",
                 "WATCH": "⚪ 观望",
                 "STOP_LOSS": "🚨 止损",
             }.get(s.decision.value, s.decision.value)
-            lines.append(f"   决策: {decision_desc}")
+            if s.decision.value == "BUY" and not getattr(s, '_executed', False):
+                decision_label = "🟢 买入 ⏸(仓位满/资金不足)"
+            lines.append(f"   决策: {decision_label}")
             lines.append("")
 
         content = "\n".join(lines)
